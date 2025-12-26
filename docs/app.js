@@ -1,19 +1,19 @@
 /* docs/app.js
- * Wardrobe AI - pure static (GitHub Pages)
+ * Wardrobe AI - GitHub Pages static
+ * Features:
  * - localStorage persistence
- * - photo library / camera / file picker
- * - quick add base items
- * - edit / save / delete
- * - Auto infer color/material from title/description (heuristics)
- * - Service Worker update: auto + manual hard refresh (?update=1 / long-press title)
+ * - add photo (library/camera/file) + quick add base items
+ * - edit/save/delete
+ * - "AI" (offline) auto-detect color & material from description (keyword heuristics)
+ * - Service Worker update + hard refresh hooks (?update=1 / long-press title)
  */
 
 (() => {
   "use strict";
 
   // ========= Config =========
-  const STORAGE_KEY = "wardrobe_items_v1";
-  const SW_VERSION = 8; // 有改 app.js / styles.css / index.html，建議 +1
+  const STORAGE_KEY = "wardrobe_items_v2"; // v2: add color/material
+  const SW_VERSION = 8; // 改檔案就 +1，更新更快
 
   const CATEGORIES = [
     { key: "all", label: "全部" },
@@ -36,71 +36,50 @@
     { title: "直筒牛仔褲", category: "bottom", tmin: 15, tmax: 30 },
   ];
 
-  // 圖片壓縮上限（越小越順；大量衣物建議 768）
+  // Image compression (smaller => smoother)
   const IMAGE_MAX = 768;
-  const IMAGE_QUALITY = 0.80;
+  const IMAGE_QUALITY = 0.8;
 
-  // ========= Auto Infer Dictionaries =========
-  // 顏色：由「更具體 → 更一般」排序，避免先命中「藍」而漏掉「海軍藍」
+  // ========= AI Heuristics Dictionaries =========
+  // 顏色：用「同義詞 → 主要色」方式
   const COLOR_PATTERNS = [
-    { label: "海軍藍", re: /(海軍藍|海軍|navy)/i },
-    { label: "深藍", re: /(深藍|靛藍|靛色|深藍色)/i },
-    { label: "淺藍", re: /(淺藍|天藍|baby\s*blue)/i },
-    { label: "藍", re: /(藍|blue)/i },
-
-    { label: "軍綠", re: /(軍綠|軍綠色)/i },
-    { label: "橄欖綠", re: /(橄欖綠|橄欖|olive)/i },
-    { label: "墨綠", re: /(墨綠|深綠)/i },
-    { label: "淺綠", re: /(淺綠|薄荷綠|mint)/i },
-    { label: "綠", re: /(綠|green)/i },
-
-    { label: "酒紅", re: /(酒紅|暗紅|burgundy|wine)/i },
-    { label: "紅", re: /(紅|red)/i },
-    { label: "粉", re: /(粉紅|粉|pink)/i },
-    { label: "紫", re: /(紫|purple)/i },
-
-    { label: "米色", re: /(米色|米白|beige)/i },
-    { label: "奶油白", re: /(奶油白|奶油|cream)/i },
-    { label: "卡其", re: /(卡其|khaki)/i },
-    { label: "駝色", re: /(駝色|camel)/i },
-    { label: "棕", re: /(咖啡|棕|brown)/i },
-
-    { label: "黃", re: /(黃|yellow)/i },
-    { label: "橘", re: /(橘|橙|orange)/i },
-
-    { label: "深灰", re: /(深灰|鐵灰|炭灰|charcoal)/i },
-    { label: "淺灰", re: /(淺灰|light\s*gray)/i },
-    { label: "灰", re: /(灰|gray|grey)/i },
-
-    { label: "黑", re: /(黑|black)/i },
-    { label: "白", re: /(白|white)/i },
+    { re: /(黑|墨黑|烏黑)/, color: "黑" },
+    { re: /(白|米白|象牙白|奶白)/, color: "白" },
+    { re: /(灰|深灰|淺灰|銀灰|炭灰)/, color: "灰" },
+    { re: /(藍|深藍|淺藍|海軍藍|寶藍|牛仔藍|靛藍)/, color: "藍" },
+    { re: /(綠|墨綠|軍綠|橄欖綠|草綠|薄荷綠)/, color: "綠" },
+    { re: /(紅|酒紅|磚紅|暗紅)/, color: "紅" },
+    { re: /(棕|咖啡|咖啡色|巧克力|駝色)/, color: "棕" },
+    { re: /(卡其|米色|杏色|奶油色|沙色|淺棕)/, color: "卡其/米" },
+    { re: /(黃|芥末黃)/, color: "黃" },
+    { re: /(橘|橙)/, color: "橘" },
+    { re: /(粉|玫瑰粉|蜜桃粉)/, color: "粉" },
+    { re: /(紫|薰衣草紫)/, color: "紫" },
   ];
 
+  // 材質：抓常見詞；可同時抓多個（用 / 串起來）
   const MATERIAL_PATTERNS = [
-    { label: "牛仔", re: /(牛仔|丹寧|denim|jean)/i },
-    { label: "棉", re: /(棉|純棉|cotton)/i },
-    { label: "羊毛", re: /(羊毛|wool|merino)/i },
-    { label: "羊絨", re: /(羊絨|cashmere)/i },
-    { label: "羽絨", re: /(羽絨|down)/i },
-    { label: "皮革", re: /(皮革|真皮|牛皮|羊皮|leather)/i },
-    { label: "麂皮", re: /(麂皮|suede)/i },
-    { label: "尼龍", re: /(尼龍|nylon)/i },
-    { label: "聚酯", re: /(聚酯|polyester|poly)/i },
-    { label: "針織", re: /(針織|knit)/i },
-    { label: "毛呢", re: /(毛呢|呢料)/i },
-    { label: "法蘭絨", re: /(法蘭絨|flannel)/i },
-    { label: "防水/機能布", re: /(防水|gore\-tex|機能|hard\s*shell|soft\s*shell)/i },
-    { label: "麻", re: /(麻|亞麻|linen)/i },
-    { label: "絨", re: /(絨|刷毛|fleece|velvet)/i },
-    { label: "毛圈", re: /(毛圈|terry)/i },
+    { re: /(棉|純棉|棉質|棉料)/, material: "棉" },
+    { re: /(麻|亞麻|苧麻)/, material: "麻" },
+    { re: /(羊毛|毛呢|呢料|wool)/i, material: "羊毛" },
+    { re: /(羊絨|cashmere)/i, material: "羊絨" },
+    { re: /(聚酯|polyester|滌綸)/i, material: "聚酯" },
+    { re: /(尼龍|nylon)/i, material: "尼龍" },
+    { re: /(彈性|彈力|spandex|elastane|萊卡)/i, material: "彈性纖維" },
+    { re: /(牛仔|丹寧|denim)/i, material: "丹寧" },
+    { re: /(皮革|真皮|牛皮|羊皮|皮料)/, material: "皮革" },
+    { re: /(PU|人造皮)/i, material: "PU/人造皮" },
+    { re: /(羽絨|down)/i, material: "羽絨" },
+    { re: /(針織|knit)/i, material: "針織" },
+    { re: /(絲|真絲|silk)/i, material: "絲" },
   ];
 
   // ========= State =========
   let items = loadItems();
   let filterCat = "all";
-  let activeTab = "wardrobe"; // bottom nav
+  let activeTab = "wardrobe";
 
-  // ========= DOM bootstrap =========
+  // ========= DOM =========
   const root = ensureSkeleton();
   const els = bindEls(root);
 
@@ -110,17 +89,12 @@
   setupServiceWorker();
   setupHardRefreshHooks();
 
-  // ========= UI / Render =========
+  // ========= Render =========
   function renderAll() {
-    renderHeaderCount();
+    els.sub.textContent = `今天收集了 ${items.length} 件寶貝`;
     renderChips();
     renderContent();
     renderBottomNav();
-  }
-
-  function renderHeaderCount() {
-    const n = items.length;
-    els.sub.textContent = `今天收集了 ${n} 件寶貝`;
   }
 
   function renderChips() {
@@ -145,11 +119,10 @@
       holder.style.marginTop = "24px";
       holder.innerHTML =
         activeTab === "mix"
-          ? "自選穿搭（下一步可加：從衣櫃挑上衣/下著/外套…）"
+          ? "自選穿搭（可加：從衣櫃挑上衣/下著/外套…）"
           : activeTab === "sense"
-          ? "靈感（下一步可加：天氣卡片、風格 chips、推薦）"
-          : "個人（下一步可加：備份/匯出/匯入/清除快取）";
-
+          ? "靈感（可加：天氣卡片、風格 chips、推薦）"
+          : "個人（可加：匯出/匯入、清除快取、備份）";
       els.grid.appendChild(holder);
       return;
     }
@@ -181,20 +154,10 @@
 
       const tag = document.createElement("div");
       tag.className = "tag";
-
       const catLabel = catLabelOf(it.category);
-      const range = formatRange(it.tmin, it.tmax);
-
-      // 顯示顏色/材質（如果沒填，就用推測結果顯示，但不會寫回 storage）
-      const inferred = inferColorMaterial(it.title);
-      const color = (it.color || "").trim() || inferred.color;
-      const material = (it.material || "").trim() || inferred.material;
-
-      const parts = [`${catLabel} · ${range}`];
-      if (color) parts.push(color);
-      if (material) parts.push(material);
-
-      tag.textContent = parts.join(" · ");
+      const range = `${it.tmin ?? 0}–${it.tmax ?? 0}°C`;
+      const extra = compactExtra(it.color, it.material);
+      tag.textContent = extra ? `${catLabel} · ${range} · ${extra}` : `${catLabel} · ${range}`;
 
       card.appendChild(img);
       card.appendChild(title);
@@ -203,17 +166,25 @@
     }
   }
 
+  function compactExtra(color, material) {
+    const c = (color || "").trim();
+    const m = (material || "").trim();
+    if (!c && !m) return "";
+    if (c && m) return `${c}/${m}`;
+    return c || m;
+  }
+
   function renderBottomNav() {
-    const btns = els.bottomNav.querySelectorAll("button[data-tab]");
-    btns.forEach((b) => b.classList.toggle("on", b.dataset.tab === activeTab));
+    els.bottomNav.querySelectorAll("button[data-tab]").forEach((b) => {
+      b.classList.toggle("on", b.dataset.tab === activeTab);
+    });
   }
 
   // ========= Events =========
   function bindEvents() {
     els.chips.addEventListener("click", (e) => {
       const t = e.target;
-      if (!(t instanceof HTMLElement)) return;
-      if (!t.classList.contains("chip")) return;
+      if (!(t instanceof HTMLElement) || !t.classList.contains("chip")) return;
       filterCat = t.dataset.cat || "all";
       renderChips();
       renderContent();
@@ -230,13 +201,13 @@
       closeMenu();
     });
 
-    els.fab.addEventListener("click", () => toggleMenu());
+    els.fab.addEventListener("click", toggleMenu);
 
     document.addEventListener("click", (e) => {
       const target = e.target;
       if (!(target instanceof Node)) return;
-      const insideMenu = els.menu.contains(target) || els.fab.contains(target);
-      if (!insideMenu) closeMenu();
+      const inside = els.menu.contains(target) || els.fab.contains(target);
+      if (!inside) closeMenu();
     });
 
     els.grid.addEventListener("click", (e) => {
@@ -244,8 +215,7 @@
       if (!(t instanceof HTMLElement)) return;
       const card = t.closest("button.card");
       if (!card) return;
-      const id = card.dataset.id;
-      const it = items.find((x) => x.id === id);
+      const it = items.find((x) => x.id === card.dataset.id);
       if (!it) return;
       openEditModal(it);
     });
@@ -254,17 +224,14 @@
       closeMenu();
       els.fileLibrary.click();
     });
-
     els.btnCamera.addEventListener("click", () => {
       closeMenu();
       els.fileCamera.click();
     });
-
     els.btnFile.addEventListener("click", () => {
       closeMenu();
       els.fileAny.click();
     });
-
     els.btnQuick.addEventListener("click", () => {
       closeMenu();
       openQuickAddModal();
@@ -297,16 +264,14 @@
     const dataUrl = await compressImageToDataUrl(file, IMAGE_MAX, IMAGE_QUALITY);
     const titleFromName = (file.name || "").replace(/\.[^/.]+$/, "").trim();
 
-    const inferred = inferColorMaterial(titleFromName);
-
     const it = {
       id: uid(),
       title: titleFromName || "未命名",
       category: "top",
       tmin: 18,
       tmax: 30,
-      color: inferred.color || "",
-      material: inferred.material || "",
+      color: "",
+      material: "",
       image: dataUrl,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -314,7 +279,6 @@
 
     items.unshift(it);
     saveItems(items);
-
     renderAll();
     openEditModal(it);
   }
@@ -324,40 +288,51 @@
     els.modalTitle.textContent = "編輯單品";
     els.modal.hidden = false;
 
+    // 自動推斷（若尚未有值）—用 title 當描述來源
+    const inferred = inferColorMaterial(it.title || "");
+    const initColor = (it.color || "").trim() || inferred.color;
+    const initMaterial = (it.material || "").trim() || inferred.material;
+
     // fill
     els.nameInput.value = it.title || "";
     els.tminInput.value = String(it.tmin ?? "");
     els.tmaxInput.value = String(it.tmax ?? "");
-    els.colorInput.value = String(it.color || "");
-    els.materialInput.value = String(it.material || "");
+    els.colorInput.value = initColor || "";
+    els.materialInput.value = initMaterial || "";
     renderCatGrid(it.category);
 
-    // 初次打開：如果 color/material 空白 → 用推測值填入（可手改）
-    const guessed = inferColorMaterial(els.nameInput.value);
-    if (!els.colorInput.value.trim() && guessed.color) els.colorInput.value = guessed.color;
-    if (!els.materialInput.value.trim() && guessed.material) els.materialInput.value = guessed.material;
+    // debounce auto-infer when name changes
+    let timer = null;
+    const onNameInput = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const text = (els.nameInput.value || "").trim();
+        const r = inferColorMaterial(text);
+        // 只在欄位空白時自動寫入，避免你手動改後又被覆蓋
+        if (!els.colorInput.value.trim() && r.color) els.colorInput.value = r.color;
+        if (!els.materialInput.value.trim() && r.material) els.materialInput.value = r.material;
+      }, 300);
+    };
+    els.nameInput.addEventListener("input", onNameInput, { passive: true });
+    els.__detachNameInfer = () => els.nameInput.removeEventListener("input", onNameInput);
 
-    // 即時提示：使用者改名稱/描述時，自動更新「建議值」（只在欄位還空白時才填，避免覆蓋你手動輸入）
-    els.nameInput.oninput = () => {
-      const g = inferColorMaterial(els.nameInput.value);
-      if (!els.colorInput.value.trim() && g.color) els.colorInput.value = g.color;
-      if (!els.materialInput.value.trim() && g.material) els.materialInput.value = g.material;
+    // AI button (manual)
+    els.aiBtn.onclick = () => {
+      const text = (els.nameInput.value || "").trim();
+      const r = inferColorMaterial(text);
+      els.colorInput.value = r.color || els.colorInput.value;
+      els.materialInput.value = r.material || els.materialInput.value;
     };
 
-    // 手動一鍵重新辨識（不管目前有沒有內容都覆蓋）
-    els.inferBtn.onclick = () => {
-      const g = inferColorMaterial(els.nameInput.value);
-      els.colorInput.value = g.color || "";
-      els.materialInput.value = g.material || "";
-    };
+    // close
+    els.modalClose.onclick = () => closeModal();
 
-    const onClose = () => closeModal();
-    els.modalClose.onclick = onClose;
-
+    // click backdrop closes
     els.modal.onclick = (e) => {
       if (e.target === els.modal) closeModal();
     };
 
+    // save
     els.saveBtn.textContent = "儲存修改";
     els.saveBtn.onclick = () => {
       const next = { ...it };
@@ -365,26 +340,21 @@
       next.tmin = toNumOr(next.tmin, els.tminInput.value);
       next.tmax = toNumOr(next.tmax, els.tmaxInput.value);
       next.category = els.catGrid.dataset.selected || next.category;
-
-      // 顏色/材質：允許你手動輸入；若留空就用推測值
-      const g = inferColorMaterial(next.title);
-      const c = (els.colorInput.value || "").trim();
-      const m = (els.materialInput.value || "").trim();
-      next.color = c || g.color || "";
-      next.material = m || g.material || "";
-
+      next.color = (els.colorInput.value || "").trim();
+      next.material = (els.materialInput.value || "").trim();
       next.updatedAt = Date.now();
 
       items = items.map((x) => (x.id === it.id ? next : x));
       saveItems(items);
+
       closeModal();
       renderAll();
     };
 
+    // delete
     els.deleteBtn.hidden = false;
     els.deleteBtn.onclick = () => {
-      const ok = confirm("確定要刪除這個單品嗎？");
-      if (!ok) return;
+      if (!confirm("確定要刪除這個單品嗎？")) return;
       items = items.filter((x) => x.id !== it.id);
       saveItems(items);
       closeModal();
@@ -399,21 +369,13 @@
     els.modal.hidden = false;
     els.deleteBtn.hidden = true;
 
-    els.nameInput.value = "";
-    els.tminInput.value = "";
-    els.tmaxInput.value = "";
-    els.colorInput.value = "";
-    els.materialInput.value = "";
-    els.nameInput.oninput = null;
+    // hide normal fields (用簡單方式：把輸入區塊隱藏)
+    els.formWrap.hidden = true;
+    els.quickWrap.hidden = false;
+    els.quickWrap.innerHTML = "";
 
-    // 快速加入模式：隱藏顏色/材質輸入區，保留按鈕區
-    els.extraBox.hidden = true;
-
-    els.catGrid.innerHTML = "";
-    els.catGrid.dataset.selected = "";
-
-    const wrap = document.createElement("div");
-    wrap.className = "catGrid";
+    const grid = document.createElement("div");
+    grid.className = "catGrid";
 
     for (const q of QUICK_BASE) {
       const b = document.createElement("button");
@@ -428,8 +390,8 @@
           category: q.category,
           tmin: q.tmin,
           tmax: q.tmax,
-          color: inferred.color || "",
-          material: inferred.material || "",
+          color: inferred.color,
+          material: inferred.material,
           image: "",
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -439,10 +401,10 @@
         closeModal();
         renderAll();
       };
-      wrap.appendChild(b);
+      grid.appendChild(b);
     }
 
-    els.catGrid.appendChild(wrap);
+    els.quickWrap.appendChild(grid);
 
     els.saveBtn.textContent = "關閉";
     els.saveBtn.onclick = () => closeModal();
@@ -461,9 +423,18 @@
     els.modalClose.onclick = null;
     els.saveBtn.onclick = null;
     els.deleteBtn.onclick = null;
-    els.inferBtn.onclick = null;
-    els.nameInput.oninput = null;
-    els.extraBox.hidden = false;
+    els.aiBtn.onclick = null;
+
+    // restore form
+    els.formWrap.hidden = false;
+    els.quickWrap.hidden = true;
+
+    // detach name infer
+    if (els.__detachNameInfer) {
+      els.__detachNameInfer();
+      els.__detachNameInfer = null;
+    }
+
     document.body.style.overflow = "";
   }
 
@@ -485,28 +456,28 @@
     }
   }
 
-  // ========= Infer Logic =========
+  // ========= Offline "AI" =========
   function inferColorMaterial(text) {
-    const t = normalize(text);
+    const s = String(text || "").trim();
+    if (!s) return { color: "", material: "" };
 
-    const color = firstMatchLabel(COLOR_PATTERNS, t);
-    const material = firstMatchLabel(MATERIAL_PATTERNS, t);
+    let color = "";
+    for (const p of COLOR_PATTERNS) {
+      if (p.re.test(s)) {
+        color = p.color;
+        break;
+      }
+    }
+
+    const mats = [];
+    for (const p of MATERIAL_PATTERNS) {
+      if (p.re.test(s)) mats.push(p.material);
+    }
+    // 去重
+    const uniq = [...new Set(mats)];
+    const material = uniq.slice(0, 2).join("/"); // 最多顯示 2 個，避免太長
 
     return { color, material };
-  }
-
-  function firstMatchLabel(patterns, text) {
-    for (const p of patterns) {
-      if (p.re.test(text)) return p.label;
-    }
-    return "";
-  }
-
-  function normalize(s) {
-    return String(s || "")
-      .replace(/\s+/g, "")
-      .replace(/[()（）【】\[\]{}]/g, "")
-      .toLowerCase();
   }
 
   // ========= Menu =========
@@ -519,35 +490,49 @@
 
   // ========= Storage =========
   function loadItems() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return [];
-      const arr = JSON.parse(raw);
-      if (!Array.isArray(arr)) return [];
-      return arr
-        .filter((x) => x && typeof x === "object" && typeof x.id === "string")
-        .map((x) => ({
-          id: x.id,
-          title: String(x.title || "未命名"),
-          category: String(x.category || "top"),
-          tmin: typeof x.tmin === "number" ? x.tmin : 18,
-          tmax: typeof x.tmax === "number" ? x.tmax : 30,
-          color: typeof x.color === "string" ? x.color : "",
-          material: typeof x.material === "string" ? x.material : "",
-          image: typeof x.image === "string" ? x.image : "",
-          createdAt: typeof x.createdAt === "number" ? x.createdAt : Date.now(),
-          updatedAt: typeof x.updatedAt === "number" ? x.updatedAt : Date.now(),
-        }));
-    } catch {
-      return [];
+    // 兼容舊版 key
+    const candidates = [STORAGE_KEY, "wardrobe_items_v1"];
+    for (const key of candidates) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) continue;
+
+        const cleaned = arr
+          .filter((x) => x && typeof x === "object" && typeof x.id === "string")
+          .map((x) => ({
+            id: x.id,
+            title: String(x.title || "未命名"),
+            category: String(x.category || "top"),
+            tmin: typeof x.tmin === "number" ? x.tmin : 18,
+            tmax: typeof x.tmax === "number" ? x.tmax : 30,
+            color: typeof x.color === "string" ? x.color : "",
+            material: typeof x.material === "string" ? x.material : "",
+            image: typeof x.image === "string" ? x.image : "",
+            createdAt: typeof x.createdAt === "number" ? x.createdAt : Date.now(),
+            updatedAt: typeof x.updatedAt === "number" ? x.updatedAt : Date.now(),
+          }));
+
+        // 若讀到的是舊 key，順便升級寫入新 key
+        if (key !== STORAGE_KEY) {
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
+          } catch {}
+        }
+        return cleaned;
+      } catch {
+        // try next
+      }
     }
+    return [];
   }
 
   function saveItems(next) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     } catch (e) {
-      alert("儲存失敗：可能是圖片太多導致容量滿了。建議把圖片縮小或刪除部分單品。");
+      alert("儲存失敗：可能是圖片太多導致容量滿了。建議刪除部分照片或降低圖片尺寸。");
       console.error(e);
     }
   }
@@ -559,12 +544,6 @@
 
   function catLabelOf(key) {
     return (CATEGORIES.find((c) => c.key === key) || CATEGORIES[1]).label;
-  }
-
-  function formatRange(tmin, tmax) {
-    const a = typeof tmin === "number" ? tmin : 0;
-    const b = typeof tmax === "number" ? tmax : 0;
-    return `${a}–${b}°C`;
   }
 
   function toNumOr(fallback, v) {
@@ -589,7 +568,6 @@
 
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
-
     const scale = Math.min(1, maxSide / Math.max(w, h));
     const nw = Math.max(1, Math.round(w * scale));
     const nh = Math.max(1, Math.round(h * scale));
@@ -645,34 +623,40 @@
             <button class="iconBtn" type="button" aria-label="Close">×</button>
           </div>
 
-          <div class="field">
-            <div class="label">名稱 / 描述</div>
-            <input class="input" placeholder="例如：深灰色立領羽絨外套，輕巧保暖" />
-          </div>
+          <div class="formWrap">
+            <div class="field">
+              <div class="labelRow">
+                <div class="label">名稱 / 描述</div>
+                <button class="miniBtn" type="button">AI 自動判斷</button>
+              </div>
+              <input class="input" placeholder="例如：橄欖綠休閒Polo短袖上衣，棉質面料" />
+            </div>
 
-          <div class="field">
-            <div class="label">適穿溫度範圍（°C）</div>
-            <div class="row2">
-              <input class="input" inputmode="numeric" placeholder="0" />
-              <div class="dash">-</div>
-              <input class="input" inputmode="numeric" placeholder="18" />
+            <div class="field">
+              <div class="label">適穿溫度範圍（°C）</div>
+              <div class="row2">
+                <input class="input" inputmode="numeric" placeholder="0" />
+                <div class="dash">-</div>
+                <input class="input" inputmode="numeric" placeholder="18" />
+              </div>
+            </div>
+
+            <div class="field">
+              <div class="label">顏色 / 材質</div>
+              <div class="row2">
+                <input class="input" placeholder="顏色（例如：綠）" />
+                <div class="dash">·</div>
+                <input class="input" placeholder="材質（例如：棉）" />
+              </div>
+            </div>
+
+            <div class="field">
+              <div class="label">修改分類</div>
+              <div class="catGrid"></div>
             </div>
           </div>
 
-          <div class="field">
-            <div class="label">修改分類</div>
-            <div class="catGrid"></div>
-          </div>
-
-          <!-- 新增：顏色/材質（可手改；也可一鍵重新辨識） -->
-          <div class="field extraBox">
-            <div class="label">顏色 / 材質（可手動修改）</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-              <input class="input jsColor" placeholder="顏色（例：軍綠）" />
-              <input class="input jsMaterial" placeholder="材質（例：牛仔/棉/羽絨）" />
-            </div>
-            <button class="catBtn" type="button" style="margin-top:10px;">自動重新辨識</button>
-          </div>
+          <div class="quickWrap" hidden></div>
 
           <button class="btnPrimary" type="button">儲存修改</button>
           <button class="btnDanger" type="button">刪除此單品</button>
@@ -701,21 +685,22 @@
     const modalTitle = modal.querySelector(".modalTitle");
     const modalClose = modal.querySelector(".iconBtn");
 
-    const nameInput = modalCard.querySelectorAll(".input")[0];
-    const tminInput = modalCard.querySelectorAll(".input")[1];
-    const tmaxInput = modalCard.querySelectorAll(".input")[2];
+    const formWrap = modalCard.querySelector(".formWrap");
+    const quickWrap = modalCard.querySelector(".quickWrap");
+
+    const inputs = modalCard.querySelectorAll(".input");
+    const nameInput = inputs[0];
+    const tminInput = inputs[1];
+    const tmaxInput = inputs[2];
+    const colorInput = inputs[3];
+    const materialInput = inputs[4];
+
+    const aiBtn = modalCard.querySelector(".miniBtn");
 
     const catGrid = modalCard.querySelector(".catGrid");
     const saveBtn = modalCard.querySelector(".btnPrimary");
     const deleteBtn = modalCard.querySelector(".btnDanger");
 
-    // 新增：顏色/材質
-    const extraBox = modalCard.querySelector(".extraBox");
-    const colorInput = modalCard.querySelector(".jsColor");
-    const materialInput = modalCard.querySelector(".jsMaterial");
-    const inferBtn = extraBox.querySelector("button");
-
-    // menu buttons
     const btnLibrary = menu.querySelector('button[data-action="library"]');
     const btnCamera = menu.querySelector('button[data-action="camera"]');
     const btnFile = menu.querySelector('button[data-action="file"]');
@@ -755,9 +740,14 @@
       modal,
       modalTitle,
       modalClose,
+      formWrap,
+      quickWrap,
       nameInput,
       tminInput,
       tmaxInput,
+      colorInput,
+      materialInput,
+      aiBtn,
       catGrid,
       saveBtn,
       deleteBtn,
@@ -768,20 +758,15 @@
       fileLibrary,
       fileCamera,
       fileAny,
-
-      // new
-      extraBox,
-      colorInput,
-      materialInput,
-      inferBtn,
+      __detachNameInfer: null,
     };
   }
 
   // ========= Service Worker =========
   function setupServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
-    const swUrl = `./sw.js?v=${SW_VERSION}`;
 
+    const swUrl = `./sw.js?v=${SW_VERSION}`;
     navigator.serviceWorker
       .register(swUrl)
       .then((reg) => {
@@ -806,7 +791,7 @@
     });
   }
 
-  // ========= Hard Refresh (manual) =========
+  // ========= Hard Refresh =========
   function setupHardRefreshHooks() {
     async function hardReload() {
       try {
@@ -830,6 +815,7 @@
       return;
     }
 
+    // 長按標題 3 秒強制更新
     if (els.h1) {
       let timer = null;
       els.h1.addEventListener(
