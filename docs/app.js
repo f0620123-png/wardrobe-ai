@@ -1,832 +1,773 @@
 /* docs/app.js
- * Wardrobe AI - GitHub Pages static
- * Features:
- * - localStorage persistence
- * - add photo (library/camera/file) + quick add base items
- * - edit/save/delete
- * - "AI" (offline) auto-detect color & material from description (keyword heuristics)
- * - Service Worker update + hard refresh hooks (?update=1 / long-press title)
- */
+   Wardrobe AI (GitHub Pages)
+   - localStorage persistence
+   - FAB '+' menu: Photo Library / Camera / Quick Add / Settings / Force Refresh
+   - Card click: Edit modal (save/delete/cancel)
+   - AI: analyze color/material from photo or description via your own proxy endpoint
+*/
 
 (() => {
   "use strict";
 
-  // ========= Config =========
-  const STORAGE_KEY = "wardrobe_items_v2"; // v2: add color/material
-  const SW_VERSION = 8; // 改檔案就 +1，更新更快
+  // ====== Config ======
+  const LS_KEY = "wardrobe_items_v3";
+  const LS_AI_ENDPOINT = "wardrobe_ai_endpoint_v1";
 
-  const CATEGORIES = [
-    { key: "all", label: "全部" },
-    { key: "top", label: "上衣" },
-    { key: "bottom", label: "下著" },
-    { key: "inner", label: "內搭" },
-    { key: "outer", label: "外套" },
-    { key: "shoes", label: "鞋子" },
-    { key: "accessory", label: "配件" },
+  // 你的 GitHub Pages 前端不應直接打 OpenAI；請放你自己的 Proxy (Cloudflare Worker) URL
+  // 你也可在 UI 內用「設定 AI 端點」來存到 localStorage
+  const DEFAULT_AI_ENDPOINT = ""; // e.g. "https://YOUR-WORKER.workers.dev/analyze"
+
+  // ====== Categories ======
+  const CATS = [
+    { key: "上衣", label: "上衣" },
+    { key: "下著", label: "下著" },
+    { key: "內搭", label: "內搭" },
+    { key: "外套", label: "外套" },
+    { key: "鞋子", label: "鞋子" },
+    { key: "配件", label: "配件" },
+    // 你截圖後來擴充的分類（不影響既有）
+    { key: "連身", label: "連身" },
+    { key: "背心", label: "背心" },
+    { key: "褲子", label: "褲子" },
+    { key: "其他", label: "其他" },
   ];
 
-  const QUICK_BASE = [
-    { title: "長袖打底（白）", category: "inner", tmin: 0, tmax: 18 },
-    { title: "長袖打底（黑）", category: "inner", tmin: 0, tmax: 18 },
-    { title: "短袖T恤（白）", category: "top", tmin: 18, tmax: 30 },
-    { title: "短袖T恤（黑）", category: "top", tmin: 18, tmax: 30 },
-    { title: "連帽外套（灰）", category: "outer", tmin: 10, tmax: 22 },
-    { title: "牛仔外套", category: "outer", tmin: 12, tmax: 24 },
-    { title: "牛仔寬褲", category: "bottom", tmin: 15, tmax: 30 },
-    { title: "直筒牛仔褲", category: "bottom", tmin: 15, tmax: 30 },
+  // Quick add presets (name + cat + optional temp range)
+  const QUICK_PRESETS = [
+    { title: "長袖打底（白）", cat: "內搭", tmin: 10, tmax: 22 },
+    { title: "長袖打底（黑）", cat: "內搭", tmin: 10, tmax: 22 },
+    { title: "短袖T恤（白）", cat: "上衣", tmin: 22, tmax: 30 },
+    { title: "短袖T恤（黑）", cat: "上衣", tmin: 22, tmax: 30 },
+    { title: "連帽外套（灰）", cat: "外套", tmin: 12, tmax: 22 },
+    { title: "牛仔外套", cat: "外套", tmin: 15, tmax: 28 },
+    { title: "牛仔寬褲", cat: "下著", tmin: 15, tmax: 30 },
+    { title: "直筒牛仔褲", cat: "下著", tmin: 15, tmax: 30 },
   ];
 
-  // Image compression (smaller => smoother)
-  const IMAGE_MAX = 768;
-  const IMAGE_QUALITY = 0.8;
+  // ====== State ======
+  const state = {
+    tab: "衣櫃", // bottom nav
+    catFilter: "全部",
+    items: [],
+    menuOpen: false,
+    modalOpen: false,
+  };
 
-  // ========= AI Heuristics Dictionaries =========
-  // 顏色：用「同義詞 → 主要色」方式
-  const COLOR_PATTERNS = [
-    { re: /(黑|墨黑|烏黑)/, color: "黑" },
-    { re: /(白|米白|象牙白|奶白)/, color: "白" },
-    { re: /(灰|深灰|淺灰|銀灰|炭灰)/, color: "灰" },
-    { re: /(藍|深藍|淺藍|海軍藍|寶藍|牛仔藍|靛藍)/, color: "藍" },
-    { re: /(綠|墨綠|軍綠|橄欖綠|草綠|薄荷綠)/, color: "綠" },
-    { re: /(紅|酒紅|磚紅|暗紅)/, color: "紅" },
-    { re: /(棕|咖啡|咖啡色|巧克力|駝色)/, color: "棕" },
-    { re: /(卡其|米色|杏色|奶油色|沙色|淺棕)/, color: "卡其/米" },
-    { re: /(黃|芥末黃)/, color: "黃" },
-    { re: /(橘|橙)/, color: "橘" },
-    { re: /(粉|玫瑰粉|蜜桃粉)/, color: "粉" },
-    { re: /(紫|薰衣草紫)/, color: "紫" },
-  ];
+  // ====== Helpers ======
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-  // 材質：抓常見詞；可同時抓多個（用 / 串起來）
-  const MATERIAL_PATTERNS = [
-    { re: /(棉|純棉|棉質|棉料)/, material: "棉" },
-    { re: /(麻|亞麻|苧麻)/, material: "麻" },
-    { re: /(羊毛|毛呢|呢料|wool)/i, material: "羊毛" },
-    { re: /(羊絨|cashmere)/i, material: "羊絨" },
-    { re: /(聚酯|polyester|滌綸)/i, material: "聚酯" },
-    { re: /(尼龍|nylon)/i, material: "尼龍" },
-    { re: /(彈性|彈力|spandex|elastane|萊卡)/i, material: "彈性纖維" },
-    { re: /(牛仔|丹寧|denim)/i, material: "丹寧" },
-    { re: /(皮革|真皮|牛皮|羊皮|皮料)/, material: "皮革" },
-    { re: /(PU|人造皮)/i, material: "PU/人造皮" },
-    { re: /(羽絨|down)/i, material: "羽絨" },
-    { re: /(針織|knit)/i, material: "針織" },
-    { re: /(絲|真絲|silk)/i, material: "絲" },
-  ];
-
-  // ========= State =========
-  let items = loadItems();
-  let filterCat = "all";
-  let activeTab = "wardrobe";
-
-  // ========= DOM =========
-  const root = ensureSkeleton();
-  const els = bindEls(root);
-
-  // ========= Init =========
-  renderAll();
-  bindEvents();
-  setupServiceWorker();
-  setupHardRefreshHooks();
-
-  // ========= Render =========
-  function renderAll() {
-    els.sub.textContent = `今天收集了 ${items.length} 件寶貝`;
-    renderChips();
-    renderContent();
-    renderBottomNav();
-  }
-
-  function renderChips() {
-    els.chips.innerHTML = "";
-    for (const c of CATEGORIES) {
-      const b = document.createElement("button");
-      b.className = "chip" + (filterCat === c.key ? " on" : "");
-      b.type = "button";
-      b.textContent = c.label;
-      b.dataset.cat = c.key;
-      els.chips.appendChild(b);
+  function h(tag, attrs = {}, children = []) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") el.className = v;
+      else if (k === "text") el.textContent = v;
+      else if (k === "html") el.innerHTML = v;
+      else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
+      else if (v === true) el.setAttribute(k, "");
+      else if (v !== false && v != null) el.setAttribute(k, v);
     }
-  }
-
-  function renderContent() {
-    if (activeTab !== "wardrobe") {
-      els.grid.innerHTML = "";
-      els.empty.hidden = true;
-
-      const holder = document.createElement("div");
-      holder.className = "empty";
-      holder.style.marginTop = "24px";
-      holder.innerHTML =
-        activeTab === "mix"
-          ? "自選穿搭（可加：從衣櫃挑上衣/下著/外套…）"
-          : activeTab === "sense"
-          ? "靈感（可加：天氣卡片、風格 chips、推薦）"
-          : "個人（可加：匯出/匯入、清除快取、備份）";
-      els.grid.appendChild(holder);
-      return;
+    for (const c of children) {
+      if (c == null) continue;
+      if (typeof c === "string") el.appendChild(document.createTextNode(c));
+      else el.appendChild(c);
     }
-
-    const shown = filterCat === "all" ? items : items.filter((x) => x.category === filterCat);
-    els.grid.innerHTML = "";
-
-    if (shown.length === 0) {
-      els.empty.hidden = false;
-      return;
-    }
-    els.empty.hidden = true;
-
-    for (const it of shown) {
-      const card = document.createElement("button");
-      card.type = "button";
-      card.className = "card";
-      card.dataset.id = it.id;
-
-      const img = document.createElement("img");
-      img.alt = it.title || "item";
-      img.loading = "lazy";
-      img.src = it.image || "";
-      if (!it.image) img.style.background = "#f2f2f2";
-
-      const title = document.createElement("div");
-      title.className = "cardTitle";
-      title.textContent = it.title || "未命名";
-
-      const tag = document.createElement("div");
-      tag.className = "tag";
-      const catLabel = catLabelOf(it.category);
-      const range = `${it.tmin ?? 0}–${it.tmax ?? 0}°C`;
-      const extra = compactExtra(it.color, it.material);
-      tag.textContent = extra ? `${catLabel} · ${range} · ${extra}` : `${catLabel} · ${range}`;
-
-      card.appendChild(img);
-      card.appendChild(title);
-      card.appendChild(tag);
-      els.grid.appendChild(card);
-    }
+    return el;
   }
 
-  function compactExtra(color, material) {
-    const c = (color || "").trim();
-    const m = (material || "").trim();
-    if (!c && !m) return "";
-    if (c && m) return `${c}/${m}`;
-    return c || m;
-  }
-
-  function renderBottomNav() {
-    els.bottomNav.querySelectorAll("button[data-tab]").forEach((b) => {
-      b.classList.toggle("on", b.dataset.tab === activeTab);
-    });
-  }
-
-  // ========= Events =========
-  function bindEvents() {
-    els.chips.addEventListener("click", (e) => {
-      const t = e.target;
-      if (!(t instanceof HTMLElement) || !t.classList.contains("chip")) return;
-      filterCat = t.dataset.cat || "all";
-      renderChips();
-      renderContent();
-    });
-
-    els.bottomNav.addEventListener("click", (e) => {
-      const t = e.target;
-      if (!(t instanceof HTMLElement)) return;
-      const btn = t.closest("button[data-tab]");
-      if (!btn) return;
-      activeTab = btn.dataset.tab || "wardrobe";
-      renderContent();
-      renderBottomNav();
-      closeMenu();
-    });
-
-    els.fab.addEventListener("click", toggleMenu);
-
-    document.addEventListener("click", (e) => {
-      const target = e.target;
-      if (!(target instanceof Node)) return;
-      const inside = els.menu.contains(target) || els.fab.contains(target);
-      if (!inside) closeMenu();
-    });
-
-    els.grid.addEventListener("click", (e) => {
-      const t = e.target;
-      if (!(t instanceof HTMLElement)) return;
-      const card = t.closest("button.card");
-      if (!card) return;
-      const it = items.find((x) => x.id === card.dataset.id);
-      if (!it) return;
-      openEditModal(it);
-    });
-
-    els.btnLibrary.addEventListener("click", () => {
-      closeMenu();
-      els.fileLibrary.click();
-    });
-    els.btnCamera.addEventListener("click", () => {
-      closeMenu();
-      els.fileCamera.click();
-    });
-    els.btnFile.addEventListener("click", () => {
-      closeMenu();
-      els.fileAny.click();
-    });
-    els.btnQuick.addEventListener("click", () => {
-      closeMenu();
-      openQuickAddModal();
-    });
-
-    els.fileLibrary.addEventListener("change", async () => {
-      const f = els.fileLibrary.files && els.fileLibrary.files[0];
-      els.fileLibrary.value = "";
-      if (!f) return;
-      await addFromFile(f);
-    });
-
-    els.fileCamera.addEventListener("change", async () => {
-      const f = els.fileCamera.files && els.fileCamera.files[0];
-      els.fileCamera.value = "";
-      if (!f) return;
-      await addFromFile(f);
-    });
-
-    els.fileAny.addEventListener("change", async () => {
-      const f = els.fileAny.files && els.fileAny.files[0];
-      els.fileAny.value = "";
-      if (!f) return;
-      await addFromFile(f);
-    });
-  }
-
-  // ========= Add / Edit =========
-  async function addFromFile(file) {
-    const dataUrl = await compressImageToDataUrl(file, IMAGE_MAX, IMAGE_QUALITY);
-    const titleFromName = (file.name || "").replace(/\.[^/.]+$/, "").trim();
-
-    const it = {
-      id: uid(),
-      title: titleFromName || "未命名",
-      category: "top",
-      tmin: 18,
-      tmax: 30,
-      color: "",
-      material: "",
-      image: dataUrl,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-
-    items.unshift(it);
-    saveItems(items);
-    renderAll();
-    openEditModal(it);
-  }
-
-  function openEditModal(it) {
-    closeMenu();
-    els.modalTitle.textContent = "編輯單品";
-    els.modal.hidden = false;
-
-    // 自動推斷（若尚未有值）—用 title 當描述來源
-    const inferred = inferColorMaterial(it.title || "");
-    const initColor = (it.color || "").trim() || inferred.color;
-    const initMaterial = (it.material || "").trim() || inferred.material;
-
-    // fill
-    els.nameInput.value = it.title || "";
-    els.tminInput.value = String(it.tmin ?? "");
-    els.tmaxInput.value = String(it.tmax ?? "");
-    els.colorInput.value = initColor || "";
-    els.materialInput.value = initMaterial || "";
-    renderCatGrid(it.category);
-
-    // debounce auto-infer when name changes
-    let timer = null;
-    const onNameInput = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        const text = (els.nameInput.value || "").trim();
-        const r = inferColorMaterial(text);
-        // 只在欄位空白時自動寫入，避免你手動改後又被覆蓋
-        if (!els.colorInput.value.trim() && r.color) els.colorInput.value = r.color;
-        if (!els.materialInput.value.trim() && r.material) els.materialInput.value = r.material;
-      }, 300);
-    };
-    els.nameInput.addEventListener("input", onNameInput, { passive: true });
-    els.__detachNameInfer = () => els.nameInput.removeEventListener("input", onNameInput);
-
-    // AI button (manual)
-    els.aiBtn.onclick = () => {
-      const text = (els.nameInput.value || "").trim();
-      const r = inferColorMaterial(text);
-      els.colorInput.value = r.color || els.colorInput.value;
-      els.materialInput.value = r.material || els.materialInput.value;
-    };
-
-    // close
-    els.modalClose.onclick = () => closeModal();
-
-    // click backdrop closes
-    els.modal.onclick = (e) => {
-      if (e.target === els.modal) closeModal();
-    };
-
-    // save
-    els.saveBtn.textContent = "儲存修改";
-    els.saveBtn.onclick = () => {
-      const next = { ...it };
-      next.title = (els.nameInput.value || "").trim() || "未命名";
-      next.tmin = toNumOr(next.tmin, els.tminInput.value);
-      next.tmax = toNumOr(next.tmax, els.tmaxInput.value);
-      next.category = els.catGrid.dataset.selected || next.category;
-      next.color = (els.colorInput.value || "").trim();
-      next.material = (els.materialInput.value || "").trim();
-      next.updatedAt = Date.now();
-
-      items = items.map((x) => (x.id === it.id ? next : x));
-      saveItems(items);
-
-      closeModal();
-      renderAll();
-    };
-
-    // delete
-    els.deleteBtn.hidden = false;
-    els.deleteBtn.onclick = () => {
-      if (!confirm("確定要刪除這個單品嗎？")) return;
-      items = items.filter((x) => x.id !== it.id);
-      saveItems(items);
-      closeModal();
-      renderAll();
-    };
-
-    document.body.style.overflow = "hidden";
-  }
-
-  function openQuickAddModal() {
-    els.modalTitle.textContent = "⚡ 快速加入基礎單品";
-    els.modal.hidden = false;
-    els.deleteBtn.hidden = true;
-
-    // hide normal fields (用簡單方式：把輸入區塊隱藏)
-    els.formWrap.hidden = true;
-    els.quickWrap.hidden = false;
-    els.quickWrap.innerHTML = "";
-
-    const grid = document.createElement("div");
-    grid.className = "catGrid";
-
-    for (const q of QUICK_BASE) {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "catBtn";
-      b.textContent = q.title;
-      b.onclick = () => {
-        const inferred = inferColorMaterial(q.title);
-        const it = {
-          id: uid(),
-          title: q.title,
-          category: q.category,
-          tmin: q.tmin,
-          tmax: q.tmax,
-          color: inferred.color,
-          material: inferred.material,
-          image: "",
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        };
-        items.unshift(it);
-        saveItems(items);
-        closeModal();
-        renderAll();
-      };
-      grid.appendChild(b);
-    }
-
-    els.quickWrap.appendChild(grid);
-
-    els.saveBtn.textContent = "關閉";
-    els.saveBtn.onclick = () => closeModal();
-
-    els.modalClose.onclick = () => closeModal();
-    els.modal.onclick = (e) => {
-      if (e.target === els.modal) closeModal();
-    };
-
-    document.body.style.overflow = "hidden";
-  }
-
-  function closeModal() {
-    els.modal.hidden = true;
-    els.modal.onclick = null;
-    els.modalClose.onclick = null;
-    els.saveBtn.onclick = null;
-    els.deleteBtn.onclick = null;
-    els.aiBtn.onclick = null;
-
-    // restore form
-    els.formWrap.hidden = false;
-    els.quickWrap.hidden = true;
-
-    // detach name infer
-    if (els.__detachNameInfer) {
-      els.__detachNameInfer();
-      els.__detachNameInfer = null;
-    }
-
-    document.body.style.overflow = "";
-  }
-
-  function renderCatGrid(selected) {
-    els.catGrid.innerHTML = "";
-    els.catGrid.dataset.selected = selected || "top";
-
-    for (const c of CATEGORIES.filter((x) => x.key !== "all")) {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "catBtn" + (c.key === selected ? " on" : "");
-      b.textContent = c.label;
-      b.onclick = () => {
-        els.catGrid.dataset.selected = c.key;
-        els.catGrid.querySelectorAll(".catBtn").forEach((n) => n.classList.remove("on"));
-        b.classList.add("on");
-      };
-      els.catGrid.appendChild(b);
-    }
-  }
-
-  // ========= Offline "AI" =========
-  function inferColorMaterial(text) {
-    const s = String(text || "").trim();
-    if (!s) return { color: "", material: "" };
-
-    let color = "";
-    for (const p of COLOR_PATTERNS) {
-      if (p.re.test(s)) {
-        color = p.color;
-        break;
-      }
-    }
-
-    const mats = [];
-    for (const p of MATERIAL_PATTERNS) {
-      if (p.re.test(s)) mats.push(p.material);
-    }
-    // 去重
-    const uniq = [...new Set(mats)];
-    const material = uniq.slice(0, 2).join("/"); // 最多顯示 2 個，避免太長
-
-    return { color, material };
-  }
-
-  // ========= Menu =========
-  function toggleMenu() {
-    els.menu.hidden = !els.menu.hidden;
-  }
-  function closeMenu() {
-    els.menu.hidden = true;
-  }
-
-  // ========= Storage =========
-  function loadItems() {
-    // 兼容舊版 key
-    const candidates = [STORAGE_KEY, "wardrobe_items_v1"];
-    for (const key of candidates) {
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) continue;
-        const arr = JSON.parse(raw);
-        if (!Array.isArray(arr)) continue;
-
-        const cleaned = arr
-          .filter((x) => x && typeof x === "object" && typeof x.id === "string")
-          .map((x) => ({
-            id: x.id,
-            title: String(x.title || "未命名"),
-            category: String(x.category || "top"),
-            tmin: typeof x.tmin === "number" ? x.tmin : 18,
-            tmax: typeof x.tmax === "number" ? x.tmax : 30,
-            color: typeof x.color === "string" ? x.color : "",
-            material: typeof x.material === "string" ? x.material : "",
-            image: typeof x.image === "string" ? x.image : "",
-            createdAt: typeof x.createdAt === "number" ? x.createdAt : Date.now(),
-            updatedAt: typeof x.updatedAt === "number" ? x.updatedAt : Date.now(),
-          }));
-
-        // 若讀到的是舊 key，順便升級寫入新 key
-        if (key !== STORAGE_KEY) {
-          try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
-          } catch {}
-        }
-        return cleaned;
-      } catch {
-        // try next
-      }
-    }
-    return [];
-  }
-
-  function saveItems(next) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    } catch (e) {
-      alert("儲存失敗：可能是圖片太多導致容量滿了。建議刪除部分照片或降低圖片尺寸。");
-      console.error(e);
-    }
-  }
-
-  // ========= Helpers =========
   function uid() {
-    return "i_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
+    return "i_" + Math.random().toString(16).slice(2) + Date.now().toString(16);
   }
 
-  function catLabelOf(key) {
-    return (CATEGORIES.find((c) => c.key === key) || CATEGORIES[1]).label;
+  function todayStr() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   }
 
-  function toNumOr(fallback, v) {
-    const n = Number(String(v).trim());
-    return Number.isFinite(n) ? n : fallback;
+  function load() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      state.items = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(state.items)) state.items = [];
+    } catch {
+      state.items = [];
+    }
   }
 
-  async function compressImageToDataUrl(file, maxSide, quality) {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(String(r.result));
-      r.onerror = () => reject(new Error("FileReader error"));
-      r.readAsDataURL(file);
-    });
+  function save() {
+    localStorage.setItem(LS_KEY, JSON.stringify(state.items));
+  }
 
-    const img = await new Promise((resolve, reject) => {
+  function getAIEndpoint() {
+    return localStorage.getItem(LS_AI_ENDPOINT) || DEFAULT_AI_ENDPOINT || "";
+  }
+
+  function setAIEndpoint(url) {
+    localStorage.setItem(LS_AI_ENDPOINT, url.trim());
+  }
+
+  // Resize DataURL to reduce latency/cost
+  async function downscaleDataURL(dataURL, maxW = 900, quality = 0.84) {
+    if (!dataURL || !dataURL.startsWith("data:image/")) return dataURL;
+
+    const img = await new Promise((res, rej) => {
       const im = new Image();
-      im.onload = () => resolve(im);
-      im.onerror = () => reject(new Error("Image load error"));
-      im.src = dataUrl;
+      im.onload = () => res(im);
+      im.onerror = rej;
+      im.src = dataURL;
     });
 
-    const w = img.naturalWidth || img.width;
-    const h = img.naturalHeight || img.height;
-    const scale = Math.min(1, maxSide / Math.max(w, h));
-    const nw = Math.max(1, Math.round(w * scale));
-    const nh = Math.max(1, Math.round(h * scale));
+    const scale = Math.min(1, maxW / img.width);
+    if (scale >= 1) return dataURL;
 
     const canvas = document.createElement("canvas");
-    canvas.width = nw;
-    canvas.height = nh;
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
     const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0, nw, nh);
-
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", quality);
   }
 
-  // ========= Skeleton / DOM =========
-  function ensureSkeleton() {
-    let app = document.querySelector(".app");
-    if (app) return app;
+  function formatTemp(tmin, tmax) {
+    const a = Number.isFinite(tmin) ? tmin : "";
+    const b = Number.isFinite(tmax) ? tmax : "";
+    if (a === "" && b === "") return "";
+    if (a !== "" && b !== "") return `${a}–${b}°C`;
+    return `${a !== "" ? a : "?"}–${b !== "" ? b : "?"}°C`;
+  }
 
-    app = document.createElement("div");
-    app.className = "app";
-    app.innerHTML = `
-      <header class="header">
-        <div class="brand">MY WARDROBE</div>
-        <h1>我的衣櫃日記</h1>
-        <div class="sub"></div>
-      </header>
+  function stopScrollWhenModal(open) {
+    document.documentElement.style.overflow = open ? "hidden" : "";
+    document.body.style.overflow = open ? "hidden" : "";
+  }
 
-      <div class="chips"></div>
+  // ====== UI Build ======
+  function buildApp() {
+    document.body.innerHTML = "";
 
-      <div class="grid"></div>
-      <div class="empty" hidden>尚無衣物，點右下角 + 新增</div>
+    const app = h("div", { class: "app", id: "app" }, [
+      buildHeader(),
+      buildChips(),
+      h("div", { id: "content" }, [buildWardrobeView()]),
+    ]);
 
-      <nav class="bottomNav">
-        <button type="button" data-tab="wardrobe" class="on">衣櫃</button>
-        <button type="button" data-tab="mix">自選</button>
-        <button type="button" data-tab="sense">靈感</button>
-        <button type="button" data-tab="profile">個人</button>
-      </nav>
-
-      <button class="fab" type="button">+</button>
-
-      <div class="menu" hidden>
-        <button type="button" data-action="library">照片圖庫</button>
-        <button type="button" data-action="camera">拍照</button>
-        <button type="button" data-action="file">選擇檔案</button>
-        <button type="button" data-action="quick">⚡ 快速加入基礎單品</button>
-      </div>
-
-      <div class="modal" hidden>
-        <div class="modalCard" role="dialog" aria-modal="true">
-          <div class="modalHead">
-            <div class="modalTitle">編輯單品</div>
-            <button class="iconBtn" type="button" aria-label="Close">×</button>
-          </div>
-
-          <div class="formWrap">
-            <div class="field">
-              <div class="labelRow">
-                <div class="label">名稱 / 描述</div>
-                <button class="miniBtn" type="button">AI 自動判斷</button>
-              </div>
-              <input class="input" placeholder="例如：橄欖綠休閒Polo短袖上衣，棉質面料" />
-            </div>
-
-            <div class="field">
-              <div class="label">適穿溫度範圍（°C）</div>
-              <div class="row2">
-                <input class="input" inputmode="numeric" placeholder="0" />
-                <div class="dash">-</div>
-                <input class="input" inputmode="numeric" placeholder="18" />
-              </div>
-            </div>
-
-            <div class="field">
-              <div class="label">顏色 / 材質</div>
-              <div class="row2">
-                <input class="input" placeholder="顏色（例如：綠）" />
-                <div class="dash">·</div>
-                <input class="input" placeholder="材質（例如：棉）" />
-              </div>
-            </div>
-
-            <div class="field">
-              <div class="label">修改分類</div>
-              <div class="catGrid"></div>
-            </div>
-          </div>
-
-          <div class="quickWrap" hidden></div>
-
-          <button class="btnPrimary" type="button">儲存修改</button>
-          <button class="btnDanger" type="button">刪除此單品</button>
-        </div>
-      </div>
-    `;
+    const bottomNav = buildBottomNav();
+    const fab = buildFab();
     document.body.appendChild(app);
-    return app;
+    document.body.appendChild(bottomNav);
+    document.body.appendChild(fab);
+
+    renderAll();
   }
 
-  function bindEls(app) {
-    const header = app.querySelector(".header");
-    const h1 = header.querySelector("h1");
-    const sub = header.querySelector(".sub");
-
-    const chips = app.querySelector(".chips");
-    const grid = app.querySelector(".grid");
-    const empty = app.querySelector(".empty");
-
-    const bottomNav = app.querySelector(".bottomNav");
-    const fab = app.querySelector(".fab");
-    const menu = app.querySelector(".menu");
-
-    const modal = app.querySelector(".modal");
-    const modalCard = modal.querySelector(".modalCard");
-    const modalTitle = modal.querySelector(".modalTitle");
-    const modalClose = modal.querySelector(".iconBtn");
-
-    const formWrap = modalCard.querySelector(".formWrap");
-    const quickWrap = modalCard.querySelector(".quickWrap");
-
-    const inputs = modalCard.querySelectorAll(".input");
-    const nameInput = inputs[0];
-    const tminInput = inputs[1];
-    const tmaxInput = inputs[2];
-    const colorInput = inputs[3];
-    const materialInput = inputs[4];
-
-    const aiBtn = modalCard.querySelector(".miniBtn");
-
-    const catGrid = modalCard.querySelector(".catGrid");
-    const saveBtn = modalCard.querySelector(".btnPrimary");
-    const deleteBtn = modalCard.querySelector(".btnDanger");
-
-    const btnLibrary = menu.querySelector('button[data-action="library"]');
-    const btnCamera = menu.querySelector('button[data-action="camera"]');
-    const btnFile = menu.querySelector('button[data-action="file"]');
-    const btnQuick = menu.querySelector('button[data-action="quick"]');
-
-    // hidden file inputs
-    const fileLibrary = document.createElement("input");
-    fileLibrary.type = "file";
-    fileLibrary.accept = "image/*";
-    fileLibrary.hidden = true;
-
-    const fileCamera = document.createElement("input");
-    fileCamera.type = "file";
-    fileCamera.accept = "image/*";
-    fileCamera.setAttribute("capture", "environment");
-    fileCamera.hidden = true;
-
-    const fileAny = document.createElement("input");
-    fileAny.type = "file";
-    fileAny.accept = "image/*";
-    fileAny.hidden = true;
-
-    document.body.appendChild(fileLibrary);
-    document.body.appendChild(fileCamera);
-    document.body.appendChild(fileAny);
-
-    return {
-      app,
-      h1,
-      sub,
-      chips,
-      grid,
-      empty,
-      bottomNav,
-      fab,
-      menu,
-      modal,
-      modalTitle,
-      modalClose,
-      formWrap,
-      quickWrap,
-      nameInput,
-      tminInput,
-      tmaxInput,
-      colorInput,
-      materialInput,
-      aiBtn,
-      catGrid,
-      saveBtn,
-      deleteBtn,
-      btnLibrary,
-      btnCamera,
-      btnFile,
-      btnQuick,
-      fileLibrary,
-      fileCamera,
-      fileAny,
-      __detachNameInfer: null,
-    };
+  function buildHeader() {
+    return h("div", { class: "header" }, [
+      h("div", { class: "brand", text: "MY WARDROBE" }),
+      h("h1", { text: "我的衣櫃日記" }),
+      h("div", { class: "sub", id: "subText", text: "" }),
+    ]);
   }
 
-  // ========= Service Worker =========
-  function setupServiceWorker() {
-    if (!("serviceWorker" in navigator)) return;
+  function buildChips() {
+    const chips = h("div", { class: "chips", id: "chips" });
+    const all = h("button", {
+      class: "chip on",
+      text: "全部",
+      onclick: () => {
+        state.catFilter = "全部";
+        renderChips();
+        renderWardrobe();
+      },
+    });
+    chips.appendChild(all);
 
-    const swUrl = `./sw.js?v=${SW_VERSION}`;
-    navigator.serviceWorker
-      .register(swUrl)
-      .then((reg) => {
-        if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
+    for (const c of CATS) {
+      chips.appendChild(
+        h("button", {
+          class: "chip",
+          text: c.label,
+          onclick: () => {
+            state.catFilter = c.key;
+            renderChips();
+            renderWardrobe();
+          },
+        })
+      );
+    }
+    return chips;
+  }
 
-        reg.addEventListener("updatefound", () => {
-          const nw = reg.installing;
-          if (!nw) return;
-          nw.addEventListener("statechange", () => {
-            if (nw.state === "installed" && navigator.serviceWorker.controller) {
-              location.reload();
-            }
-          });
-        });
-      })
-      .catch(console.error);
+  function buildWardrobeView() {
+    return h("div", { id: "wardrobeView" }, [
+      h("div", { class: "grid", id: "grid" }),
+      h("div", { class: "empty", id: "empty", text: "尚無衣物，點右下角 + 新增" }),
+    ]);
+  }
 
-    navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (window.__reloading__) return;
-      window.__reloading__ = true;
-      location.reload();
+  function buildBottomNav() {
+    const nav = h("div", { class: "bottomNav", id: "bottomNav" });
+
+    const tabs = ["衣櫃", "自選", "靈感", "個人"];
+    for (const t of tabs) {
+      nav.appendChild(
+        h("button", {
+          class: t === state.tab ? "on" : "",
+          text: t,
+          onclick: () => {
+            state.tab = t;
+            renderBottomNav();
+            renderContentByTab();
+          },
+        })
+      );
+    }
+    return nav;
+  }
+
+  function buildFab() {
+    return h("button", {
+      class: "fab",
+      id: "fab",
+      text: "+",
+      onclick: () => toggleMenu(true),
     });
   }
 
-  // ========= Hard Refresh =========
-  function setupHardRefreshHooks() {
-    async function hardReload() {
-      try {
-        if ("serviceWorker" in navigator) {
-          const regs = await navigator.serviceWorker.getRegistrations();
-          await Promise.all(regs.map((r) => r.unregister()));
+  function buildMenu() {
+    // NOTE: 用 display:none / remove 方式避免「透明層卡住不能點」問題
+    const menu = h("div", { class: "menu", id: "menu" }, [
+      h("button", { text: "照片圖庫", onclick: () => (toggleMenu(false), pickImage("library")) }),
+      h("button", { text: "拍照", onclick: () => (toggleMenu(false), pickImage("camera")) }),
+      h("button", { text: "⚡ 快速加入基礎單品", onclick: () => (toggleMenu(false), openQuickAdd()) }),
+      h("button", { text: "設定 AI 端點", onclick: () => (toggleMenu(false), openAIEndpointSetting()) }),
+      h("button", { class: "danger", text: "強制更新（清快取）", onclick: () => (toggleMenu(false), hardRefresh()) }),
+    ]);
+    return menu;
+  }
+
+  function toggleMenu(open) {
+    state.menuOpen = open;
+
+    const existing = $("#menu");
+    if (open) {
+      if (!existing) document.body.appendChild(buildMenu());
+      // 點背景關閉（用捕捉避免卡頓）
+      window.addEventListener("pointerdown", onGlobalPointerDownToCloseMenu, true);
+    } else {
+      if (existing) existing.remove();
+      window.removeEventListener("pointerdown", onGlobalPointerDownToCloseMenu, true);
+    }
+  }
+
+  function onGlobalPointerDownToCloseMenu(e) {
+    const menu = $("#menu");
+    const fab = $("#fab");
+    if (!menu || !fab) return;
+    if (menu.contains(e.target) || fab.contains(e.target)) return;
+    toggleMenu(false);
+  }
+
+  function renderBottomNav() {
+    const btns = $$("#bottomNav button");
+    btns.forEach((b) => b.classList.toggle("on", b.textContent === state.tab));
+  }
+
+  function renderContentByTab() {
+    // 目前你核心功能在「衣櫃」，其他頁先留白（不影響）
+    const content = $("#content");
+    content.innerHTML = "";
+    if (state.tab === "衣櫃") content.appendChild(buildWardrobeView());
+    else content.appendChild(h("div", { class: "empty", text: `${state.tab}（待擴充）` }));
+    renderAll();
+  }
+
+  function renderChips() {
+    const chips = $$("#chips .chip");
+    chips.forEach((c) => c.classList.remove("on"));
+    const target = chips.find((c) => c.textContent === state.catFilter) || chips.find((c) => c.textContent === "全部");
+    if (target) target.classList.add("on");
+  }
+
+  function renderSubText() {
+    const sub = $("#subText");
+    if (!sub) return;
+    // 以今日新增（createdAt=今日）計算
+    const today = todayStr();
+    const count = state.items.filter((x) => x.createdAt === today).length;
+    sub.textContent = `今天收集了 ${count} 件寶貝`;
+  }
+
+  function renderWardrobe() {
+    const grid = $("#grid");
+    const empty = $("#empty");
+    if (!grid || !empty) return;
+
+    const items = state.items
+      .slice()
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+    const filtered = state.catFilter === "全部" ? items : items.filter((x) => x.cat === state.catFilter);
+
+    grid.innerHTML = "";
+    if (filtered.length === 0) {
+      empty.style.display = "block";
+      grid.style.display = "none";
+      return;
+    }
+    empty.style.display = "none";
+    grid.style.display = "grid";
+
+    for (const it of filtered) {
+      grid.appendChild(renderCard(it));
+    }
+  }
+
+  function renderCard(it) {
+    const img = it.photo
+      ? h("img", { src: it.photo, alt: it.title || "item" })
+      : h("div", {
+          style:
+            "width:100%;height:150px;background:#f2f2f2;display:flex;align-items:center;justify-content:center;color:#aaa;font-weight:800;",
+          text: "No Photo",
+        });
+
+    const title = h("div", { class: "cardTitle", text: it.title || "(未命名)" });
+
+    // tag line: cat · temp · color/material
+    const metaParts = [];
+    if (it.cat) metaParts.push(it.cat);
+    const temp = formatTemp(it.tmin, it.tmax);
+    if (temp) metaParts.push(temp);
+    if (it.color) metaParts.push(it.color);
+    if (it.material) metaParts.push(it.material);
+
+    const tag = h("div", { class: "tag", text: metaParts.join(" · ") || "尚未設定" });
+
+    const card = h("button", { class: "card", onclick: () => openEdit(it.id) }, [
+      img,
+      title,
+      tag,
+    ]);
+
+    return card;
+  }
+
+  function renderAll() {
+    renderSubText();
+    renderChips();
+    if (state.tab === "衣櫃") renderWardrobe();
+    renderBottomNav();
+  }
+
+  // ====== Add / Pick Image ======
+  async function pickImage(mode) {
+    // mode: 'library' | 'camera'
+    const input = h("input", {
+      type: "file",
+      accept: "image/*",
+      ...(mode === "camera" ? { capture: "environment" } : {}),
+    });
+
+    input.addEventListener("change", async () => {
+      const f = input.files && input.files[0];
+      if (!f) return;
+
+      const dataURL = await fileToDataURL(f);
+      const small = await downscaleDataURL(dataURL, 1200, 0.84);
+
+      const newItem = {
+        id: uid(),
+        createdAt: todayStr(),
+        updatedAt: Date.now(),
+        title: "",
+        desc: "",
+        cat: "上衣",
+        tmin: null,
+        tmax: null,
+        fit: "",
+        length: "",
+        color: "",
+        material: "",
+        photo: small,
+        ai: null,
+      };
+
+      state.items.unshift(newItem);
+      save();
+      renderAll();
+      openEdit(newItem.id);
+    });
+
+    // iOS Safari: 必須真的 append 到 DOM 才會觸發
+    document.body.appendChild(input);
+    input.click();
+    setTimeout(() => input.remove(), 0);
+  }
+
+  function fileToDataURL(file) {
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result);
+      r.onerror = rej;
+      r.readAsDataURL(file);
+    });
+  }
+
+  function openQuickAdd() {
+    openSheet({
+      title: "⚡ 快速加入基礎單品",
+      body: (() => {
+        const wrap = h("div", {});
+        const grid = h("div", { class: "catGrid" });
+        for (const p of QUICK_PRESETS) {
+          grid.appendChild(
+            h("button", {
+              class: "catBtn",
+              text: p.title,
+              onclick: () => {
+                const it = {
+                  id: uid(),
+                  createdAt: todayStr(),
+                  updatedAt: Date.now(),
+                  title: p.title,
+                  desc: "",
+                  cat: p.cat,
+                  tmin: Number.isFinite(p.tmin) ? p.tmin : null,
+                  tmax: Number.isFinite(p.tmax) ? p.tmax : null,
+                  fit: "",
+                  length: "",
+                  color: "",
+                  material: "",
+                  photo: "",
+                  ai: null,
+                };
+                state.items.unshift(it);
+                save();
+                closeSheet();
+                renderAll();
+              },
+            })
+          );
         }
-        if (window.caches) {
-          const keys = await caches.keys();
-          await Promise.all(keys.map((k) => caches.delete(k)));
-        }
-      } catch (e) {
-        console.warn("hardReload failed", e);
-      } finally {
-        location.href = "./?v=" + Date.now();
+        wrap.appendChild(h("div", { style: "margin-top:6px;color:#777;font-weight:800;" }, ["點一下就會直接加入"]));
+        wrap.appendChild(grid);
+        return wrap;
+      })(),
+      footerButtons: [
+        { text: "關閉", kind: "icon", onClick: () => closeSheet() },
+      ],
+    });
+  }
+
+  function openAIEndpointSetting() {
+    const current = getAIEndpoint();
+    const input = h("input", {
+      class: "input",
+      value: current,
+      placeholder: "貼上你的 Proxy URL，例如 https://xxx.workers.dev/analyze",
+    });
+
+    openSheet({
+      title: "設定 AI 端點",
+      body: h("div", {}, [
+        h("div", { class: "label", text: "AI Proxy URL（必填）" }),
+        input,
+        h("div", { style: "margin-top:10px;color:#777;line-height:1.5;font-weight:700;" }, [
+          "注意：GitHub Pages 不能直接放 OpenAI API Key，必須用你自己的 Proxy（例如 Cloudflare Worker）。",
+        ]),
+      ]),
+      footerButtons: [
+        {
+          text: "儲存",
+          kind: "primary",
+          onClick: () => {
+            setAIEndpoint(input.value);
+            closeSheet();
+            alert("已儲存 AI 端點。");
+          },
+        },
+        { text: "取消", kind: "danger", onClick: () => closeSheet() },
+      ],
+    });
+  }
+
+  // ====== Modal / Sheet ======
+  let sheetEl = null;
+
+  function openSheet({ title, body, footerButtons = [] }) {
+    closeSheet();
+
+    state.modalOpen = true;
+    stopScrollWhenModal(true);
+
+    const modal = h("div", { class: "modal", id: "modal" });
+    const card = h("div", { class: "modalCard" });
+
+    const head = h("div", { class: "modalHead" }, [
+      h("div", { class: "modalTitle", text: title || "" }),
+      h("button", { class: "iconBtn", text: "×", onclick: () => closeSheet() }),
+    ]);
+
+    const foot = h("div", {});
+    for (const b of footerButtons) {
+      if (b.kind === "primary") {
+        foot.appendChild(h("button", { class: "btnPrimary", text: b.text, onclick: b.onClick }));
+      } else if (b.kind === "danger") {
+        foot.appendChild(h("button", { class: "btnDanger", text: b.text, onclick: b.onClick }));
+      } else {
+        foot.appendChild(h("button", { class: "iconBtn", text: b.text, onclick: b.onClick }));
       }
     }
 
-    if (new URLSearchParams(location.search).get("update") === "1") {
-      hardReload();
-      return;
+    card.appendChild(head);
+    card.appendChild(body);
+    if (footerButtons.length) card.appendChild(foot);
+
+    modal.appendChild(card);
+
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closeSheet();
+    });
+
+    sheetEl = modal;
+    document.body.appendChild(modal);
+  }
+
+  function closeSheet() {
+    if (sheetEl) sheetEl.remove();
+    sheetEl = null;
+    state.modalOpen = false;
+    stopScrollWhenModal(false);
+  }
+
+  // ====== Edit Item ======
+  function openEdit(id) {
+    const it = state.items.find((x) => x.id === id);
+    if (!it) return;
+
+    // fields
+    const nameInput = h("input", { class: "input", value: it.title || "", placeholder: "例如：深灰色立領羽絨外套，輕巧保暖" });
+    const descInput = h("input", { class: "input", value: it.desc || "", placeholder: "補充描述（可留空）" });
+
+    const tminInput = h("input", { class: "input", type: "number", value: it.tmin ?? "", inputmode: "numeric" });
+    const tmaxInput = h("input", { class: "input", type: "number", value: it.tmax ?? "", inputmode: "numeric" });
+
+    const fitInput = h("input", { class: "input", value: it.fit || "", placeholder: "例如：Oversized / Regular / Slim" });
+    const lenInput = h("input", { class: "input", value: it.length || "", placeholder: "例如：Hip-length / Crop / Long" });
+
+    const colorInput = h("input", { class: "input", value: it.color || "", placeholder: "例如：橄欖綠 / 海軍藍 / 米白" });
+    const matInput = h("input", { class: "input", value: it.material || "", placeholder: "例如：棉、牛仔、羊毛、羽絨、皮革…" });
+
+    // category buttons
+    const catGrid = h("div", { class: "catGrid" });
+    const catBtns = [];
+    for (const c of CATS) {
+      const btn = h("button", {
+        class: "catBtn" + (it.cat === c.key ? " on" : ""),
+        text: c.label,
+        onclick: () => {
+          catBtns.forEach((b) => b.classList.remove("on"));
+          btn.classList.add("on");
+          it.cat = c.key;
+        },
+      });
+      catBtns.push(btn);
+      catGrid.appendChild(btn);
     }
 
-    // 長按標題 3 秒強制更新
-    if (els.h1) {
-      let timer = null;
-      els.h1.addEventListener(
-        "touchstart",
-        () => {
-          timer = setTimeout(hardReload, 3000);
-        },
-        { passive: true }
-      );
-      els.h1.addEventListener("touchend", () => clearTimeout(timer));
-      els.h1.addEventListener("touchcancel", () => clearTimeout(timer));
+    // AI button (only useful if photo exists OR description exists)
+    const aiBtn = h("button", {
+      class: "btnPrimary",
+      text: it.photo ? "AI 從照片判斷顏色 / 材質" : "AI 依描述判斷顏色 / 材質",
+      onclick: async () => {
+        try {
+          aiBtn.disabled = true;
+          aiBtn.textContent = "分析中…";
+
+          const endpoint = getAIEndpoint();
+          if (!endpoint) {
+            alert("尚未設定 AI 端點。請先點「設定 AI 端點」。");
+            return;
+          }
+
+          const payload = {
+            // 送較小的圖，減少卡頓
+            image: it.photo ? await downscaleDataURL(it.photo, 900, 0.84) : "",
+            text: [nameInput.value, descInput.value].filter(Boolean).join(" / "),
+          };
+
+          const r = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (!r.ok) {
+            const t = await r.text().catch(() => "");
+            throw new Error(`AI 端點回傳錯誤：${r.status} ${t}`);
+          }
+
+          const data = await r.json();
+
+          // data: { color, material, notes, confidence }
+          if (data && typeof data === "object") {
+            if (data.color) {
+              it.color = String(data.color).trim();
+              colorInput.value = it.color;
+            }
+            if (data.material) {
+              it.material = String(data.material).trim();
+              matInput.value = it.material;
+            }
+            it.ai = data;
+            it.updatedAt = Date.now();
+            save();
+            renderAll();
+          }
+        } catch (err) {
+          alert(err.message || String(err));
+        } finally {
+          aiBtn.disabled = false;
+          aiBtn.textContent = it.photo ? "AI 從照片判斷顏色 / 材質" : "AI 依描述判斷顏色 / 材質";
+        }
+      },
+    });
+
+    const saveBtn = h("button", {
+      class: "btnPrimary",
+      text: "儲存修改",
+      onclick: () => {
+        it.title = nameInput.value.trim();
+        it.desc = descInput.value.trim();
+
+        const a = tminInput.value === "" ? null : Number(tminInput.value);
+        const b = tmaxInput.value === "" ? null : Number(tmaxInput.value);
+        it.tmin = Number.isFinite(a) ? a : null;
+        it.tmax = Number.isFinite(b) ? b : null;
+
+        it.fit = fitInput.value.trim();
+        it.length = lenInput.value.trim();
+        it.color = colorInput.value.trim();
+        it.material = matInput.value.trim();
+
+        it.updatedAt = Date.now();
+        save();
+        closeSheet();
+        renderAll();
+      },
+    });
+
+    const delBtn = h("button", {
+      class: "btnDanger",
+      text: "刪除此單品",
+      onclick: () => {
+        if (!confirm("確定刪除？")) return;
+        state.items = state.items.filter((x) => x.id !== it.id);
+        save();
+        closeSheet();
+        renderAll();
+      },
+    });
+
+    const cancelBtn = h("button", {
+      class: "btnDanger",
+      text: "取消",
+      onclick: () => closeSheet(),
+    });
+
+    const body = h("div", {}, [
+      h("div", { class: "modalTitle", text: "編輯單品", style: "margin:6px 4px 10px;font-size:22px;font-weight:900;" }),
+
+      h("div", { class: "field" }, [
+        h("div", { class: "label", text: "名稱 / 描述" }),
+        nameInput,
+        h("div", { style: "height:10px" }),
+        descInput,
+      ]),
+
+      h("div", { class: "field" }, [
+        h("div", { class: "label", text: "適穿溫度範圍（°C）" }),
+        h("div", { class: "row2" }, [tminInput, h("div", { class: "dash", text: "–" }), tmaxInput]),
+      ]),
+
+      h("div", { class: "field" }, [
+        h("div", { class: "label", text: "版型（FIT）" }),
+        fitInput,
+      ]),
+
+      h("div", { class: "field" }, [
+        h("div", { class: "label", text: "長度（LENGTH）" }),
+        lenInput,
+      ]),
+
+      h("div", { class: "field" }, [
+        h("div", { class: "label", text: "顏色（COLOR）" }),
+        colorInput,
+      ]),
+
+      h("div", { class: "field" }, [
+        h("div", { class: "label", text: "材質（MATERIAL）" }),
+        matInput,
+      ]),
+
+      h("div", { class: "field" }, [
+        h("div", { class: "label", text: "修改分類" }),
+        catGrid,
+      ]),
+
+      h("div", { style: "height:10px" }),
+
+      // AI button
+      aiBtn,
+
+      saveBtn,
+      delBtn,
+      cancelBtn,
+    ]);
+
+    openSheet({ title: "", body, footerButtons: [] });
+  }
+
+  // ====== Hard refresh / cache bust ======
+  async function hardRefresh() {
+    // 1) 清 caches（如果存在）
+    try {
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+    } catch {}
+
+    // 2) unregister SW（避免舊 SW 卡住）
+    try {
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+    } catch {}
+
+    // 3) reload
+    location.reload();
+  }
+
+  // ====== Service Worker registration ======
+  async function registerSW() {
+    if (!("serviceWorker" in navigator)) return;
+    try {
+      const reg = await navigator.serviceWorker.register("./sw.js", { scope: "./" });
+      // 主動 update 一次（避免 iOS 長期抓舊版）
+      reg.update?.();
+    } catch {
+      // ignore
     }
   }
+
+  // ====== Init ======
+  function init() {
+    load();
+    buildApp();
+    registerSW();
+  }
+
+  document.addEventListener("DOMContentLoaded", init);
 })();
