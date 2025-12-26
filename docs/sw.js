@@ -1,116 +1,72 @@
 /* docs/sw.js
- * PWA cache with SWR for assets, network-first for navigations.
- * Includes SKIP_WAITING message for fast update.
+ * 避免 iOS / Safari 舊快取導致「介面看起來正常但按鈕失效」
+ * - HTML：network-first
+ * - 靜態：stale-while-revalidate
+ * - 支援 SKIP_WAITING
  */
 
-const VERSION = "v2025-12-26-01";
-const CACHE_NAME = `wardrobe-ai-${VERSION}`;
-
-const CORE_ASSETS = [
+const CACHE_NAME = "wardrobe-cache-v10";
+const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css",
   "./app.js",
-  "./db.js",
+  "./styles.css",
   "./manifest.webmanifest",
   "./icon-192.png",
   "./icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {
-  self.skipWaiting();
-  event.waitUntil(
-    (async () => {
-      const cache = await caches.open(CACHE_NAME);
-      // 有些檔案可能不存在（例如你還沒放 icon），用 allSettled 避免整個 install 失敗
-      await Promise.allSettled(CORE_ASSETS.map((u) => cache.add(u)));
-    })()
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    try { await cache.addAll(APP_SHELL); } catch {}
+    self.skipWaiting();
+  })());
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    (async () => {
-      const keys = await caches.keys();
-      await Promise.all(keys.map((k) => (k === CACHE_NAME ? null : caches.delete(k))));
-      await self.clients.claim();
-    })()
-  );
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => (k !== CACHE_NAME ? caches.delete(k) : Promise.resolve())));
+    await self.clients.claim();
+  })());
 });
 
 self.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "SKIP_WAITING") {
-    self.skipWaiting();
-  }
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
-// Fetch strategy:
-// - Navigations: network-first (fallback to cache)
-// - Same-origin JS/CSS: stale-while-revalidate
-// - Same-origin images: cache-first (fallback network)
 self.addEventListener("fetch", (event) => {
   const req = event.request;
-  const url = new URL(req.url);
-
-  // Only handle GET
   if (req.method !== "GET") return;
 
-  // Navigation
-  if (req.mode === "navigate") {
-    event.respondWith(networkFirst(req));
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return; // 不 cache 跨域（含 Worker）
+
+  // HTML 導航：network-first
+  if (req.mode === "navigate" || (req.headers.get("accept") || "").includes("text/html")) {
+    event.respondWith((async () => {
+      try {
+        const fresh = await fetch(req, { cache: "no-store" });
+        const cache = await caches.open(CACHE_NAME);
+        cache.put(req, fresh.clone()).catch(() => {});
+        return fresh;
+      } catch {
+        return (await caches.match(req)) || (await caches.match("./index.html"));
+      }
+    })());
     return;
   }
 
-  // Only cache same-origin assets
-  if (url.origin !== self.location.origin) return;
+  // 靜態：stale-while-revalidate
+  event.respondWith((async () => {
+    const cached = await caches.match(req);
+    const fetchPromise = fetch(req).then(async (res) => {
+      const cache = await caches.open(CACHE_NAME);
+      cache.put(req, res.clone()).catch(() => {});
+      return res;
+    }).catch(() => null);
 
-  const dest = req.destination;
-
-  if (dest === "script" || dest === "style" || dest === "font") {
-    event.respondWith(staleWhileRevalidate(req));
-    return;
-  }
-
-  if (dest === "image") {
-    event.respondWith(cacheFirst(req));
-    return;
-  }
-
-  // Default: SWR
-  event.respondWith(staleWhileRevalidate(req));
+    return cached || (await fetchPromise) || new Response("", { status: 504 });
+  })());
 });
-
-async function networkFirst(req) {
-  const cache = await caches.open(CACHE_NAME);
-  try {
-    const fresh = await fetch(req);
-    cache.put(req, fresh.clone());
-    return fresh;
-  } catch {
-    const cached = await cache.match(req);
-    return cached || cache.match("./index.html");
-  }
-}
-
-async function staleWhileRevalidate(req) {
-  const cache = await caches.open(CACHE_NAME);
-  const cached = await cache.match(req);
-  const fetchPromise = fetch(req)
-    .then((fresh) => {
-      cache.put(req, fresh.clone());
-      return fresh;
-    })
-    .catch(() => null);
-
-  return cached || (await fetchPromise) || cached;
-}
-
-async function cacheFirst(req) {
-  const cache = await caches.open(CACHE_NAME);
-  const cached = await cache.match(req);
-  if (cached) return cached;
-
-  const fresh = await fetch(req);
-  cache.put(req, fresh.clone());
-  return fresh;
-}
