@@ -1,46 +1,55 @@
-const DB_NAME = "wardrobe_ai_db";
-const DB_VER = 1;
+/* docs/db.js */
+(function () {
+  const KEY = "wardrobe_items_v1";
 
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VER);
+  function read() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      console.error("DB read error", e);
+      return [];
+    }
+  }
 
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains("images")) {
-        db.createObjectStore("images"); // key: imageKey, value: Blob
-      }
-    };
+  function write(items) {
+    localStorage.setItem(KEY, JSON.stringify(items));
+  }
 
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
+  function uid() {
+    return Math.random().toString(16).slice(2) + Date.now().toString(16);
+  }
 
-async function withStore(storeName, mode, fn) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, mode);
-    const store = tx.objectStore(storeName);
-    const result = fn(store);
-
-    tx.oncomplete = () => resolve(result);
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-export const ImageDB = {
-  async put(imageKey, blob) {
-    return withStore("images", "readwrite", (s) => s.put(blob, imageKey));
-  },
-  async get(imageKey) {
-    return withStore("images", "readonly", (s) => new Promise((res, rej) => {
-      const r = s.get(imageKey);
-      r.onsuccess = () => res(r.result || null);
-      r.onerror = () => rej(r.error);
-    }));
-  },
-  async del(imageKey) {
-    return withStore("images", "readwrite", (s) => s.delete(imageKey));
-  },
-};
+  window.DB = {
+    list() {
+      return read();
+    },
+    get(id) {
+      return read().find(x => x.id === id) || null;
+    },
+    upsert(item) {
+      const items = read();
+      const idx = items.findIndex(x => x.id === item.id);
+      if (idx >= 0) items[idx] = item;
+      else items.unshift(item);
+      write(items);
+      return item;
+    },
+    remove(id) {
+      const items = read().filter(x => x.id !== id);
+      write(items);
+    },
+    newItem(partial = {}) {
+      return {
+        id: uid(),
+        title: "",
+        category: "上衣",
+        tMin: 0,
+        tMax: 30,
+        imageDataUrl: "",
+        createdAt: Date.now(),
+        ...partial
+      };
+    }
+  };
+})();
