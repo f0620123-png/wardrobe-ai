@@ -1,5 +1,11 @@
 import { ImageDB } from "./db.js";
-
+// 驗收用：強制註銷 Service Worker，避免舊版快取
+(async () => {
+  if ("serviceWorker" in navigator) {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for (const r of regs) await r.unregister();
+  }
+})();
 const CATS = [
   { key: "all", label: "全部" },
   { key: "top", label: "上衣" },
