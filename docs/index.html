@@ -8,7 +8,6 @@
 </head>
 <body>
   <main class="app">
-    <!-- 衣櫃 -->
     <section class="page" data-page="wardrobe">
       <header class="header">
         <div class="brand">MY WARDROBE</div>
@@ -17,13 +16,10 @@
       </header>
 
       <div class="chips" id="catChips"></div>
-
       <div class="grid" id="itemGrid"></div>
 
-      <!-- 右下按鈕：+ 與 ⚡（先做 +，⚡下一步做快速加入） -->
       <button class="fab" id="fabAdd" aria-label="新增衣物">+</button>
 
-      <!-- 新增選單 -->
       <div class="menu" id="addMenu" hidden>
         <button id="btnPickPhoto">照片圖庫 / 選擇檔案</button>
         <button id="btnCloseMenu" class="danger">取消</button>
@@ -32,7 +28,6 @@
       <input id="fileInput" type="file" accept="image/*" hidden />
     </section>
 
-    <!-- 其他頁先放空殼，後面再加 -->
     <section class="page" data-page="mix" hidden>
       <header class="header">
         <div class="brand">MIX & MATCH</div>
@@ -63,6 +58,38 @@
     <button data-nav="inspo">靈感</button>
     <button data-nav="profile">個人</button>
   </nav>
+
+  <!-- 編輯單品 Modal -->
+  <div class="modal" id="editModal" hidden role="dialog" aria-modal="true">
+    <div class="modalCard">
+      <div class="modalHead">
+        <div class="modalTitle">編輯單品</div>
+        <button class="iconBtn" id="btnEditClose" aria-label="關閉">✕</button>
+      </div>
+
+      <div class="field">
+        <div class="label">名稱 / 描述</div>
+        <input class="input" id="editName" placeholder="例如：深灰色立領羽絨外套，輕巧保暖" />
+      </div>
+
+      <div class="field">
+        <div class="label">適穿溫度範圍（°C）</div>
+        <div class="row2">
+          <input class="input" id="editTempMin" inputmode="numeric" placeholder="0" />
+          <div class="dash">-</div>
+          <input class="input" id="editTempMax" inputmode="numeric" placeholder="18" />
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="label">修改分類</div>
+        <div class="catGrid" id="editCatGrid"></div>
+      </div>
+
+      <button class="btnPrimary" id="btnEditSave">儲存修改</button>
+      <button class="btnDanger" id="btnEditDelete">刪除此單品</button>
+    </div>
+  </div>
 
   <script type="module" src="./app.js"></script>
 </body>
