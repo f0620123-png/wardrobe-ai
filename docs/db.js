@@ -1,55 +1,66 @@
-/* docs/db.js */
-(function () {
-  const KEY = "wardrobe_items_v1";
+/* docs/db.js
+   localStorage wrapper
+   - Items
+   - UI prefs
+   - Weather cache
+*/
 
-  function read() {
-    try {
-      const raw = localStorage.getItem(KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) {
-      console.error("DB read error", e);
-      return [];
-    }
+(() => {
+  const STORAGE_KEY = "wardrobe.items.v3";
+  const STORAGE_UI_KEY = "wardrobe.ui.v1";
+  const LS_WEATHER_KEY = "wardrobe.weather.cache.v1";
+
+  function safeParse(raw, fallback) {
+    try { return JSON.parse(raw); } catch { return fallback; }
   }
 
-  function write(items) {
-    localStorage.setItem(KEY, JSON.stringify(items));
+  function loadItems() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const arr = raw ? safeParse(raw, []) : [];
+    return Array.isArray(arr) ? arr : [];
   }
 
-  function uid() {
-    return Math.random().toString(16).slice(2) + Date.now().toString(16);
+  function saveItems(items) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  }
+
+  function loadUI() {
+    const raw = localStorage.getItem(STORAGE_UI_KEY);
+    return raw ? safeParse(raw, {}) : {};
+  }
+
+  function saveUI(ui) {
+    localStorage.setItem(STORAGE_UI_KEY, JSON.stringify(ui || {}));
+  }
+
+  function readWeatherCache() {
+    const raw = localStorage.getItem(LS_WEATHER_KEY);
+    return raw ? safeParse(raw, null) : null;
+  }
+
+  function writeWeatherCache(obj) {
+    localStorage.setItem(LS_WEATHER_KEY, JSON.stringify(obj));
+  }
+
+  function clearWeatherCache() {
+    localStorage.removeItem(LS_WEATHER_KEY);
+  }
+
+  function clearAll() {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_UI_KEY);
+    localStorage.removeItem(LS_WEATHER_KEY);
   }
 
   window.DB = {
-    list() {
-      return read();
-    },
-    get(id) {
-      return read().find(x => x.id === id) || null;
-    },
-    upsert(item) {
-      const items = read();
-      const idx = items.findIndex(x => x.id === item.id);
-      if (idx >= 0) items[idx] = item;
-      else items.unshift(item);
-      write(items);
-      return item;
-    },
-    remove(id) {
-      const items = read().filter(x => x.id !== id);
-      write(items);
-    },
-    newItem(partial = {}) {
-      return {
-        id: uid(),
-        title: "",
-        category: "上衣",
-        tMin: 0,
-        tMax: 30,
-        imageDataUrl: "",
-        createdAt: Date.now(),
-        ...partial
-      };
-    }
+    keys: { STORAGE_KEY, STORAGE_UI_KEY, LS_WEATHER_KEY },
+    loadItems,
+    saveItems,
+    loadUI,
+    saveUI,
+    readWeatherCache,
+    writeWeatherCache,
+    clearWeatherCache,
+    clearAll,
   };
 })();
