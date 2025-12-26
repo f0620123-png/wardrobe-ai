@@ -4,6 +4,7 @@
  * - photo library / camera / file picker
  * - quick add base items
  * - edit / save / delete
+ * - Auto infer color/material from title/description (heuristics)
  * - Service Worker update: auto + manual hard refresh (?update=1 / long-press title)
  */
 
@@ -12,7 +13,7 @@
 
   // ========= Config =========
   const STORAGE_KEY = "wardrobe_items_v1";
-  const SW_VERSION = 7; // 每次你更新 app.js / styles.css / index.html，都可把這個 +1，加速「驗收」更新
+  const SW_VERSION = 8; // 有改 app.js / styles.css / index.html，建議 +1
 
   const CATEGORIES = [
     { key: "all", label: "全部" },
@@ -24,7 +25,6 @@
     { key: "accessory", label: "配件" },
   ];
 
-  // 你截圖裡的「快速加入基礎單品」
   const QUICK_BASE = [
     { title: "長袖打底（白）", category: "inner", tmin: 0, tmax: 18 },
     { title: "長袖打底（黑）", category: "inner", tmin: 0, tmax: 18 },
@@ -39,6 +39,61 @@
   // 圖片壓縮上限（越小越順；大量衣物建議 768）
   const IMAGE_MAX = 768;
   const IMAGE_QUALITY = 0.80;
+
+  // ========= Auto Infer Dictionaries =========
+  // 顏色：由「更具體 → 更一般」排序，避免先命中「藍」而漏掉「海軍藍」
+  const COLOR_PATTERNS = [
+    { label: "海軍藍", re: /(海軍藍|海軍|navy)/i },
+    { label: "深藍", re: /(深藍|靛藍|靛色|深藍色)/i },
+    { label: "淺藍", re: /(淺藍|天藍|baby\s*blue)/i },
+    { label: "藍", re: /(藍|blue)/i },
+
+    { label: "軍綠", re: /(軍綠|軍綠色)/i },
+    { label: "橄欖綠", re: /(橄欖綠|橄欖|olive)/i },
+    { label: "墨綠", re: /(墨綠|深綠)/i },
+    { label: "淺綠", re: /(淺綠|薄荷綠|mint)/i },
+    { label: "綠", re: /(綠|green)/i },
+
+    { label: "酒紅", re: /(酒紅|暗紅|burgundy|wine)/i },
+    { label: "紅", re: /(紅|red)/i },
+    { label: "粉", re: /(粉紅|粉|pink)/i },
+    { label: "紫", re: /(紫|purple)/i },
+
+    { label: "米色", re: /(米色|米白|beige)/i },
+    { label: "奶油白", re: /(奶油白|奶油|cream)/i },
+    { label: "卡其", re: /(卡其|khaki)/i },
+    { label: "駝色", re: /(駝色|camel)/i },
+    { label: "棕", re: /(咖啡|棕|brown)/i },
+
+    { label: "黃", re: /(黃|yellow)/i },
+    { label: "橘", re: /(橘|橙|orange)/i },
+
+    { label: "深灰", re: /(深灰|鐵灰|炭灰|charcoal)/i },
+    { label: "淺灰", re: /(淺灰|light\s*gray)/i },
+    { label: "灰", re: /(灰|gray|grey)/i },
+
+    { label: "黑", re: /(黑|black)/i },
+    { label: "白", re: /(白|white)/i },
+  ];
+
+  const MATERIAL_PATTERNS = [
+    { label: "牛仔", re: /(牛仔|丹寧|denim|jean)/i },
+    { label: "棉", re: /(棉|純棉|cotton)/i },
+    { label: "羊毛", re: /(羊毛|wool|merino)/i },
+    { label: "羊絨", re: /(羊絨|cashmere)/i },
+    { label: "羽絨", re: /(羽絨|down)/i },
+    { label: "皮革", re: /(皮革|真皮|牛皮|羊皮|leather)/i },
+    { label: "麂皮", re: /(麂皮|suede)/i },
+    { label: "尼龍", re: /(尼龍|nylon)/i },
+    { label: "聚酯", re: /(聚酯|polyester|poly)/i },
+    { label: "針織", re: /(針織|knit)/i },
+    { label: "毛呢", re: /(毛呢|呢料)/i },
+    { label: "法蘭絨", re: /(法蘭絨|flannel)/i },
+    { label: "防水/機能布", re: /(防水|gore\-tex|機能|hard\s*shell|soft\s*shell)/i },
+    { label: "麻", re: /(麻|亞麻|linen)/i },
+    { label: "絨", re: /(絨|刷毛|fleece|velvet)/i },
+    { label: "毛圈", re: /(毛圈|terry)/i },
+  ];
 
   // ========= State =========
   let items = loadItems();
@@ -81,7 +136,6 @@
   }
 
   function renderContent() {
-    // 只有衣櫃頁面顯示 grid，其他頁面先顯示空白/占位（不影響你現有功能核心）
     if (activeTab !== "wardrobe") {
       els.grid.innerHTML = "";
       els.empty.hidden = true;
@@ -119,10 +173,7 @@
       img.alt = it.title || "item";
       img.loading = "lazy";
       img.src = it.image || "";
-      if (!it.image) {
-        // 無圖時給淡灰底（避免破圖）
-        img.style.background = "#f2f2f2";
-      }
+      if (!it.image) img.style.background = "#f2f2f2";
 
       const title = document.createElement("div");
       title.className = "cardTitle";
@@ -130,9 +181,20 @@
 
       const tag = document.createElement("div");
       tag.className = "tag";
+
       const catLabel = catLabelOf(it.category);
       const range = formatRange(it.tmin, it.tmax);
-      tag.textContent = `${catLabel} · ${range}`;
+
+      // 顯示顏色/材質（如果沒填，就用推測結果顯示，但不會寫回 storage）
+      const inferred = inferColorMaterial(it.title);
+      const color = (it.color || "").trim() || inferred.color;
+      const material = (it.material || "").trim() || inferred.material;
+
+      const parts = [`${catLabel} · ${range}`];
+      if (color) parts.push(color);
+      if (material) parts.push(material);
+
+      tag.textContent = parts.join(" · ");
 
       card.appendChild(img);
       card.appendChild(title);
@@ -143,14 +205,11 @@
 
   function renderBottomNav() {
     const btns = els.bottomNav.querySelectorAll("button[data-tab]");
-    btns.forEach((b) => {
-      b.classList.toggle("on", b.dataset.tab === activeTab);
-    });
+    btns.forEach((b) => b.classList.toggle("on", b.dataset.tab === activeTab));
   }
 
   // ========= Events =========
   function bindEvents() {
-    // chips
     els.chips.addEventListener("click", (e) => {
       const t = e.target;
       if (!(t instanceof HTMLElement)) return;
@@ -160,7 +219,6 @@
       renderContent();
     });
 
-    // bottom nav
     els.bottomNav.addEventListener("click", (e) => {
       const t = e.target;
       if (!(t instanceof HTMLElement)) return;
@@ -172,12 +230,8 @@
       closeMenu();
     });
 
-    // fab menu toggle
-    els.fab.addEventListener("click", () => {
-      toggleMenu();
-    });
+    els.fab.addEventListener("click", () => toggleMenu());
 
-    // clicking outside closes menu
     document.addEventListener("click", (e) => {
       const target = e.target;
       if (!(target instanceof Node)) return;
@@ -185,7 +239,6 @@
       if (!insideMenu) closeMenu();
     });
 
-    // grid card click -> edit
     els.grid.addEventListener("click", (e) => {
       const t = e.target;
       if (!(t instanceof HTMLElement)) return;
@@ -197,7 +250,6 @@
       openEditModal(it);
     });
 
-    // menu actions
     els.btnLibrary.addEventListener("click", () => {
       closeMenu();
       els.fileLibrary.click();
@@ -218,7 +270,6 @@
       openQuickAddModal();
     });
 
-    // file inputs
     els.fileLibrary.addEventListener("change", async () => {
       const f = els.fileLibrary.files && els.fileLibrary.files[0];
       els.fileLibrary.value = "";
@@ -246,12 +297,16 @@
     const dataUrl = await compressImageToDataUrl(file, IMAGE_MAX, IMAGE_QUALITY);
     const titleFromName = (file.name || "").replace(/\.[^/.]+$/, "").trim();
 
+    const inferred = inferColorMaterial(titleFromName);
+
     const it = {
       id: uid(),
       title: titleFromName || "未命名",
       category: "top",
       tmin: 18,
       tmax: 30,
+      color: inferred.color || "",
+      material: inferred.material || "",
       image: dataUrl,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -260,7 +315,6 @@
     items.unshift(it);
     saveItems(items);
 
-    // 立即打開編輯
     renderAll();
     openEditModal(it);
   }
@@ -274,13 +328,32 @@
     els.nameInput.value = it.title || "";
     els.tminInput.value = String(it.tmin ?? "");
     els.tmaxInput.value = String(it.tmax ?? "");
+    els.colorInput.value = String(it.color || "");
+    els.materialInput.value = String(it.material || "");
     renderCatGrid(it.category);
 
-    // actions
+    // 初次打開：如果 color/material 空白 → 用推測值填入（可手改）
+    const guessed = inferColorMaterial(els.nameInput.value);
+    if (!els.colorInput.value.trim() && guessed.color) els.colorInput.value = guessed.color;
+    if (!els.materialInput.value.trim() && guessed.material) els.materialInput.value = guessed.material;
+
+    // 即時提示：使用者改名稱/描述時，自動更新「建議值」（只在欄位還空白時才填，避免覆蓋你手動輸入）
+    els.nameInput.oninput = () => {
+      const g = inferColorMaterial(els.nameInput.value);
+      if (!els.colorInput.value.trim() && g.color) els.colorInput.value = g.color;
+      if (!els.materialInput.value.trim() && g.material) els.materialInput.value = g.material;
+    };
+
+    // 手動一鍵重新辨識（不管目前有沒有內容都覆蓋）
+    els.inferBtn.onclick = () => {
+      const g = inferColorMaterial(els.nameInput.value);
+      els.colorInput.value = g.color || "";
+      els.materialInput.value = g.material || "";
+    };
+
     const onClose = () => closeModal();
     els.modalClose.onclick = onClose;
 
-    // 點背景關閉（點卡片本體不關）
     els.modal.onclick = (e) => {
       if (e.target === els.modal) closeModal();
     };
@@ -292,6 +365,14 @@
       next.tmin = toNumOr(next.tmin, els.tminInput.value);
       next.tmax = toNumOr(next.tmax, els.tmaxInput.value);
       next.category = els.catGrid.dataset.selected || next.category;
+
+      // 顏色/材質：允許你手動輸入；若留空就用推測值
+      const g = inferColorMaterial(next.title);
+      const c = (els.colorInput.value || "").trim();
+      const m = (els.materialInput.value || "").trim();
+      next.color = c || g.color || "";
+      next.material = m || g.material || "";
+
       next.updatedAt = Date.now();
 
       items = items.map((x) => (x.id === it.id ? next : x));
@@ -310,7 +391,6 @@
       renderAll();
     };
 
-    // 防止 iOS 點擊 input 時，背景被捲動（小幅改善卡頓感）
     document.body.style.overflow = "hidden";
   }
 
@@ -319,10 +399,16 @@
     els.modal.hidden = false;
     els.deleteBtn.hidden = true;
 
-    // 清空表單區（用 catGrid 當按鈕區）
     els.nameInput.value = "";
     els.tminInput.value = "";
     els.tmaxInput.value = "";
+    els.colorInput.value = "";
+    els.materialInput.value = "";
+    els.nameInput.oninput = null;
+
+    // 快速加入模式：隱藏顏色/材質輸入區，保留按鈕區
+    els.extraBox.hidden = true;
+
     els.catGrid.innerHTML = "";
     els.catGrid.dataset.selected = "";
 
@@ -335,13 +421,16 @@
       b.className = "catBtn";
       b.textContent = q.title;
       b.onclick = () => {
+        const inferred = inferColorMaterial(q.title);
         const it = {
           id: uid(),
           title: q.title,
           category: q.category,
           tmin: q.tmin,
           tmax: q.tmax,
-          image: "", // 無圖
+          color: inferred.color || "",
+          material: inferred.material || "",
+          image: "",
           createdAt: Date.now(),
           updatedAt: Date.now(),
         };
@@ -356,9 +445,7 @@
     els.catGrid.appendChild(wrap);
 
     els.saveBtn.textContent = "關閉";
-    els.saveBtn.onclick = () => {
-      closeModal();
-    };
+    els.saveBtn.onclick = () => closeModal();
 
     els.modalClose.onclick = () => closeModal();
     els.modal.onclick = (e) => {
@@ -374,6 +461,9 @@
     els.modalClose.onclick = null;
     els.saveBtn.onclick = null;
     els.deleteBtn.onclick = null;
+    els.inferBtn.onclick = null;
+    els.nameInput.oninput = null;
+    els.extraBox.hidden = false;
     document.body.style.overflow = "";
   }
 
@@ -388,12 +478,35 @@
       b.textContent = c.label;
       b.onclick = () => {
         els.catGrid.dataset.selected = c.key;
-        // toggle style
         els.catGrid.querySelectorAll(".catBtn").forEach((n) => n.classList.remove("on"));
         b.classList.add("on");
       };
       els.catGrid.appendChild(b);
     }
+  }
+
+  // ========= Infer Logic =========
+  function inferColorMaterial(text) {
+    const t = normalize(text);
+
+    const color = firstMatchLabel(COLOR_PATTERNS, t);
+    const material = firstMatchLabel(MATERIAL_PATTERNS, t);
+
+    return { color, material };
+  }
+
+  function firstMatchLabel(patterns, text) {
+    for (const p of patterns) {
+      if (p.re.test(text)) return p.label;
+    }
+    return "";
+  }
+
+  function normalize(s) {
+    return String(s || "")
+      .replace(/\s+/g, "")
+      .replace(/[()（）【】\[\]{}]/g, "")
+      .toLowerCase();
   }
 
   // ========= Menu =========
@@ -411,7 +524,6 @@
       if (!raw) return [];
       const arr = JSON.parse(raw);
       if (!Array.isArray(arr)) return [];
-      // 基本清洗
       return arr
         .filter((x) => x && typeof x === "object" && typeof x.id === "string")
         .map((x) => ({
@@ -420,6 +532,8 @@
           category: String(x.category || "top"),
           tmin: typeof x.tmin === "number" ? x.tmin : 18,
           tmax: typeof x.tmax === "number" ? x.tmax : 30,
+          color: typeof x.color === "string" ? x.color : "",
+          material: typeof x.material === "string" ? x.material : "",
           image: typeof x.image === "string" ? x.image : "",
           createdAt: typeof x.createdAt === "number" ? x.createdAt : Date.now(),
           updatedAt: typeof x.updatedAt === "number" ? x.updatedAt : Date.now(),
@@ -459,7 +573,6 @@
   }
 
   async function compressImageToDataUrl(file, maxSide, quality) {
-    // 讀檔
     const dataUrl = await new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(String(r.result));
@@ -467,7 +580,6 @@
       r.readAsDataURL(file);
     });
 
-    // 建 img
     const img = await new Promise((resolve, reject) => {
       const im = new Image();
       im.onload = () => resolve(im);
@@ -478,7 +590,6 @@
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
 
-    // 算縮放
     const scale = Math.min(1, maxSide / Math.max(w, h));
     const nw = Math.max(1, Math.round(w * scale));
     const nh = Math.max(1, Math.round(h * scale));
@@ -489,7 +600,6 @@
     const ctx = canvas.getContext("2d");
     ctx.drawImage(img, 0, 0, nw, nh);
 
-    // 輸出 jpeg
     return canvas.toDataURL("image/jpeg", quality);
   }
 
@@ -498,7 +608,6 @@
     let app = document.querySelector(".app");
     if (app) return app;
 
-    // 若你的 index.html 已經有架構，也沒關係；此段只在缺 skeleton 時自動補
     app = document.createElement("div");
     app.className = "app";
     app.innerHTML = `
@@ -555,6 +664,16 @@
             <div class="catGrid"></div>
           </div>
 
+          <!-- 新增：顏色/材質（可手改；也可一鍵重新辨識） -->
+          <div class="field extraBox">
+            <div class="label">顏色 / 材質（可手動修改）</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <input class="input jsColor" placeholder="顏色（例：軍綠）" />
+              <input class="input jsMaterial" placeholder="材質（例：牛仔/棉/羽絨）" />
+            </div>
+            <button class="catBtn" type="button" style="margin-top:10px;">自動重新辨識</button>
+          </div>
+
           <button class="btnPrimary" type="button">儲存修改</button>
           <button class="btnDanger" type="button">刪除此單品</button>
         </div>
@@ -589,6 +708,12 @@
     const catGrid = modalCard.querySelector(".catGrid");
     const saveBtn = modalCard.querySelector(".btnPrimary");
     const deleteBtn = modalCard.querySelector(".btnDanger");
+
+    // 新增：顏色/材質
+    const extraBox = modalCard.querySelector(".extraBox");
+    const colorInput = modalCard.querySelector(".jsColor");
+    const materialInput = modalCard.querySelector(".jsMaterial");
+    const inferBtn = extraBox.querySelector("button");
 
     // menu buttons
     const btnLibrary = menu.querySelector('button[data-action="library"]');
@@ -643,27 +768,29 @@
       fileLibrary,
       fileCamera,
       fileAny,
+
+      // new
+      extraBox,
+      colorInput,
+      materialInput,
+      inferBtn,
     };
   }
 
   // ========= Service Worker =========
   function setupServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
-
-    // 有些 iOS 會卡 SW；加版本參數讓更新更確定
     const swUrl = `./sw.js?v=${SW_VERSION}`;
 
     navigator.serviceWorker
       .register(swUrl)
       .then((reg) => {
-        // 若已存在 waiting 版本，叫它立刻生效
         if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
 
         reg.addEventListener("updatefound", () => {
           const nw = reg.installing;
           if (!nw) return;
           nw.addEventListener("statechange", () => {
-            // 新 SW 安裝完成，且已有舊 SW 控制中 -> 直接重整套用新版本
             if (nw.state === "installed" && navigator.serviceWorker.controller) {
               location.reload();
             }
@@ -672,9 +799,7 @@
       })
       .catch(console.error);
 
-    // 若 SW 控制權變更，保險再 reload 一次
     navigator.serviceWorker.addEventListener("controllerchange", () => {
-      // 避免多次 reload
       if (window.__reloading__) return;
       window.__reloading__ = true;
       location.reload();
@@ -696,18 +821,15 @@
       } catch (e) {
         console.warn("hardReload failed", e);
       } finally {
-        // 加時間戳避免被快取
         location.href = "./?v=" + Date.now();
       }
     }
 
-    // ?update=1 直接強制更新
     if (new URLSearchParams(location.search).get("update") === "1") {
       hardReload();
       return;
     }
 
-    // 長按標題 3 秒強制更新（驗收用）
     if (els.h1) {
       let timer = null;
       els.h1.addEventListener(
