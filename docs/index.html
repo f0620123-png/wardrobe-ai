@@ -6,48 +6,27 @@
   <meta name="theme-color" content="#fbf6ef" />
   <title>我的衣櫃日記</title>
 
-  <!-- 這段會自動判斷 GitHub Pages 的 base path：
-       1) https://xxx.github.io/  -> base = "/"
-       2) https://xxx.github.io/wardrobe-ai/ -> base = "/wardrobe-ai/"
-     並正確載入 styles.css / app.js
-  -->
-  <script>
-    (function () {
-      // pathname 例：
-      // "/" 或 "/index.html" 或 "/wardrobe-ai/" 或 "/wardrobe-ai/index.html"
-      const parts = location.pathname.split('/').filter(Boolean);
+  <link rel="manifest" href="./manifest.webmanifest?v=3">
+  <link rel="icon" sizes="192x192" href="./icon-192.png">
+  <link rel="icon" sizes="512x512" href="./icon-512.png">
 
-      // 若是 project pages，通常第一段就是 repo 名稱
-      // 若是 root pages（user site），parts 可能為空或只有 index.html
-      const first = parts[0] || "";
-      const isFile = first.includes(".");
-      const base = (!first || isFile) ? "/" : ("/" + first + "/");
-
-      window.__BASE__ = base;
-
-      const link = document.createElement("link");
-      link.rel = "stylesheet";
-      link.href = base + "styles.css?v=2";   // v=2：強制驗收（每次改 +1）
-      document.head.appendChild(link);
-    })();
-  </script>
+  <!-- 相對路徑 + 版本號（解決 GitHub Pages /repo/ 路徑問題 + 強制驗收） -->
+  <link rel="stylesheet" href="./styles.css?v=3" />
 </head>
 
 <body>
   <main class="app" id="app"></main>
 
-  <!-- Floating Buttons -->
+  <!-- FAB -->
   <button class="fab" id="fabAdd" aria-label="新增">+</button>
-  <button class="fab fabSub" id="fabQuick" aria-label="快速加入" title="快速加入">⚡</button>
 
-  <!-- Add Menu -->
+  <!-- Menu -->
   <div class="menu" id="addMenu" hidden role="dialog" aria-label="新增方式">
     <button id="btnPickPhoto">照片圖庫</button>
     <button id="btnCamera">拍照</button>
     <button id="btnPickFile">選擇檔案</button>
   </div>
 
-  <!-- hidden file inputs -->
   <input id="filePicker" type="file" accept="image/*" hidden />
   <input id="cameraPicker" type="file" accept="image/*" capture="environment" hidden />
 
@@ -83,27 +62,7 @@
     </div>
   </div>
 
-  <!-- Quick Add Modal -->
-  <div class="modal" id="quickModal" hidden aria-hidden="true">
-    <div class="modalCard" role="dialog" aria-modal="true" aria-label="快速加入基礎單品">
-      <div class="modalHead">
-        <div class="modalTitle">⚡ 快速加入基礎單品</div>
-        <button class="iconBtn" id="btnCloseQuick" aria-label="關閉">×</button>
-      </div>
-      <div class="quickGrid" id="quickGrid"></div>
-    </div>
-  </div>
-
-  <!-- Pick Sheet (Bottom Sheet) -->
-  <div class="sheetMask" id="pickMask" hidden aria-hidden="true"></div>
-  <div class="sheet" id="pickSheet" hidden aria-hidden="true">
-    <div class="sheetHead">
-      <div class="sheetTitle" id="pickTitle">選擇</div>
-      <button class="iconBtn" id="btnClosePick" aria-label="關閉">×</button>
-    </div>
-    <div class="sheetBody" id="pickBody"></div>
-  </div>
-
+  <!-- Bottom Nav -->
   <nav class="bottomNav" aria-label="底部導覽">
     <button id="tabWardrobe" class="on">衣櫃</button>
     <button id="tabMix">自選</button>
@@ -111,10 +70,14 @@
     <button id="tabMe">個人</button>
   </nav>
 
-  <!-- 用動態 import，確保 app.js 也走同一個 base -->
-  <script type="module">
-    const base = window.__BASE__ || "/";
-    import(base + "app.js?v=2");  // v=2：強制驗收（每次改 +1）
+  <!-- app.js 相對路徑 + 版本號 -->
+  <script type="module" src="./app.js?v=3"></script>
+
+  <!-- SW：相對路徑 -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js?v=3").catch(()=>{});
+    }
   </script>
 </body>
 </html>
