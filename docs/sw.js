@@ -1,124 +1,147 @@
 /* docs/sw.js
-   Cache strategy tuned for GitHub Pages:
-   - Navigations (HTML): Network First (fallback cache)
-   - Static assets (js/css/png/webmanifest): Stale-While-Revalidate
+   - Network-first for HTML/JS/CSS to avoid stale UI
+   - Cache-first for images (with fallback)
+   - Supports messages:
+     - SKIP_WAITING
+     - CLEAR_CACHES
 */
 
-const CACHE_NAME = "wardrobe-ai-cache-v20251226-1";
+const VERSION = "sw-2025-12-26.1";
+const CACHE_CORE = `wardrobe-core-${VERSION}`;
+const CACHE_IMG = `wardrobe-img-${VERSION}`;
 
-function getBasePath() {
-  // scope like: https://f0620123-png.github.io/wardrobe-ai/
-  const u = new URL(self.registration.scope);
-  return u.pathname.endsWith("/") ? u.pathname : (u.pathname + "/");
-}
-
-const BASE = getBasePath();
-
-// Core assets (best effort)
-const CORE = [
-  BASE,
-  BASE + "index.html",
-  BASE + "styles.css",
-  BASE + "app.js",
-  BASE + "db.js",
-  BASE + "sw.js",
-  BASE + "manifest.webmanifest",
-  BASE + "icon-192.png",
-  BASE + "icon-512.png",
+const CORE_ASSETS = [
+  "./",
+  "./index.html",
+  "./styles.css",
+  "./app.js",
+  "./manifest.webmanifest",
+  "./icon-192.png",
+  "./icon-512.png"
 ];
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
-    const cache = await caches.open(CACHE_NAME);
-    try {
-      await cache.addAll(CORE);
-    } catch {
-      // GitHub Pages 有時 addAll 會因單一檔案失敗而全失敗，容錯
-      await cache.add(BASE).catch(() => {});
-    }
-    self.skipWaiting();
+    const cache = await caches.open(CACHE_CORE);
+    await cache.addAll(CORE_ASSETS);
+    await self.skipWaiting();
   })());
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.map((k) => (k === CACHE_NAME ? null : caches.delete(k))));
+    await Promise.all(
+      keys
+        .filter(k => k.startsWith("wardrobe-") && k !== CACHE_CORE && k !== CACHE_IMG)
+        .map(k => caches.delete(k))
+    );
     await self.clients.claim();
   })());
 });
 
 self.addEventListener("message", (event) => {
-  const msg = event.data;
-  if (msg === "SKIP_WAITING") self.skipWaiting();
-  if (msg === "CLEAR_CACHES") {
+  const msg = event.data || {};
+  if (msg.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
+  if (msg.type === "CLEAR_CACHES") {
     event.waitUntil((async () => {
       const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
+      await Promise.all(keys.filter(k => k.startsWith("wardrobe-")).map(k => caches.delete(k)));
+      // 清完後也 claim，讓下一次 reload 直接用新資源
+      await self.clients.claim();
     })());
   }
 });
+
+function isHtmlRequest(req) {
+  return req.mode === "navigate" ||
+    (req.headers.get("accept") || "").includes("text/html");
+}
+
+function isCoreAsset(url) {
+  const p = url.pathname;
+  return (
+    p.endsWith("/index.html") ||
+    p.endsWith("/styles.css") ||
+    p.endsWith("/app.js") ||
+    p.endsWith("/manifest.webmanifest") ||
+    p.endsWith("/icon-192.png") ||
+    p.endsWith("/icon-512.png")
+  );
+}
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // only handle same-origin
+  // 只處理同源（GitHub Pages）
   if (url.origin !== self.location.origin) return;
 
-  // HTML navigations: network first
-  if (req.mode === "navigate") {
+  // HTML/核心檔案：network-first
+  if (isHtmlRequest(req) || isCoreAsset(url)) {
     event.respondWith((async () => {
       try {
         const fresh = await fetch(req, { cache: "no-store" });
-        const cache = await caches.open(CACHE_NAME);
+        const cache = await caches.open(CACHE_CORE);
         cache.put(req, fresh.clone());
         return fresh;
       } catch {
         const cached = await caches.match(req);
-        return cached || caches.match(BASE + "index.html") || new Response("Offline", { status: 503 });
+        if (cached) return cached;
+        // 最後保底：回首頁
+        const fallback = await caches.match("./index.html");
+        return fallback || new Response("Offline", { status: 200 });
       }
     })());
     return;
   }
 
-  const isAsset =
-    url.pathname.endsWith(".js") ||
-    url.pathname.endsWith(".css") ||
-    url.pathname.endsWith(".png") ||
-    url.pathname.endsWith(".webmanifest") ||
-    url.pathname.endsWith(".ico") ||
-    url.pathname.endsWith(".svg");
-
-  if (isAsset) {
-    // stale-while-revalidate
+  // 圖片：cache-first + 背景更新
+  if (req.destination === "image") {
     event.respondWith((async () => {
-      const cache = await caches.open(CACHE_NAME);
+      const cache = await caches.open(CACHE_IMG);
       const cached = await cache.match(req);
-      const fetchPromise = (async () => {
-        try {
-          const fresh = await fetch(req, { cache: "no-store" });
-          cache.put(req, fresh.clone());
-          return fresh;
-        } catch {
-          return null;
-        }
-      })();
-
-      // return cached immediately if exists; else wait network
-      return cached || (await fetchPromise) || new Response("Offline", { status: 503 });
+      if (cached) {
+        event.waitUntil((async () => {
+          try {
+            const fresh = await fetch(req);
+            cache.put(req, fresh.clone());
+          } catch {}
+        })());
+        return cached;
+      }
+      try {
+        const fresh = await fetch(req);
+        cache.put(req, fresh.clone());
+        return fresh;
+      } catch {
+        return new Response("", { status: 200 });
+      }
     })());
     return;
   }
 
-  // default: try cache first then network
+  // 其他：stale-while-revalidate
   event.respondWith((async () => {
-    const cached = await caches.match(req);
-    if (cached) return cached;
-    try {
-      return await fetch(req);
-    } catch {
-      return new Response("Offline", { status: 503 });
+    const cache = await caches.open(CACHE_CORE);
+    const cached = await cache.match(req);
+    const fetchPromise = (async () => {
+      try {
+        const fresh = await fetch(req);
+        cache.put(req, fresh.clone());
+        return fresh;
+      } catch {
+        return null;
+      }
+    })();
+
+    if (cached) {
+      event.waitUntil(fetchPromise);
+      return cached;
     }
+    const fresh = await fetchPromise;
+    return fresh || new Response("", { status: 200 });
   })());
 });
