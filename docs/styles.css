@@ -1,474 +1,92 @@
-:root{
-  --bg:#fbf6ef;
-  --card:#ffffff;
-  --ink:#2b2b2b;
-  --muted:#777;
-  --stroke:#e8e1d8;
-  --primary:#3d3d3d;
-  --radius:24px;
-}
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#fbf6ef" />
+  <title>我的衣櫃日記</title>
 
-*{ box-sizing:border-box; }
-body{
-  margin:0;
-  background:var(--bg);
-  color:var(--ink);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
-}
+  <!-- Cache Bust: 每次你想強制驗收，把 v= 後面的數字 +1 -->
+  <link rel="stylesheet" href="./styles.css?v=1" />
+</head>
+<body>
+  <main class="app" id="app"></main>
 
-.app{
-  padding:16px 16px calc(92px + env(safe-area-inset-bottom));
-}
+  <!-- Floating Buttons -->
+  <button class="fab" id="fabAdd" aria-label="新增">+</button>
+  <button class="fab fabSub" id="fabQuick" aria-label="快速加入" title="快速加入">⚡</button>
 
-.header .brand{
-  font-size:12px;
-  letter-spacing:.12em;
-  color:#c47b4d;
-  font-weight:800;
-}
-.header h1{
-  margin:6px 0 0;
-  font-size:34px;
-  line-height:1.1;
-}
-.header .sub{
-  margin-top:6px;
-  color:var(--muted);
-}
+  <!-- Add Menu -->
+  <div class="menu" id="addMenu" hidden role="dialog" aria-label="新增方式">
+    <button id="btnPickPhoto">照片圖庫</button>
+    <button id="btnCamera">拍照</button>
+    <button id="btnPickFile">選擇檔案</button>
+  </div>
 
-.chips{
-  display:flex;
-  gap:10px;
-  overflow:auto;
-  padding:12px 0;
-  -webkit-overflow-scrolling:touch;
-}
-.chip{
-  border:1px solid transparent;
-  background:#fff;
-  border-radius:999px;
-  padding:10px 14px;
-  font-weight:700;
-  white-space:nowrap;
-}
-.chip.on{
-  border-color:#b15a6e;
-  color:#b15a6e;
-}
+  <!-- hidden file inputs -->
+  <input id="filePicker" type="file" accept="image/*" hidden />
+  <input id="cameraPicker" type="file" accept="image/*" capture="environment" hidden />
 
-.grid{
-  display:grid;
-  grid-template-columns:repeat(2, 1fr);
-  gap:12px;
-}
-.card{
-  background:var(--card);
-  border:1px solid var(--stroke);
-  border-radius:18px;
-  overflow:hidden;
-  padding:0;
-  text-align:left;
-}
-.card img{
-  width:100%;
-  height:150px;
-  object-fit:cover;
-  background:#f2f2f2;
-  display:block;
-}
-.cardTitle{
-  padding:10px 12px;
-  font-weight:800;
-}
-.tag{
-  display:inline-flex;
-  align-items:center;
-  gap:6px;
-  padding:6px 10px;
-  border-radius:999px;
-  background:rgba(0,0,0,.06);
-  font-size:12px;
-  margin:0 12px 12px;
-  color:#555;
-}
+  <!-- Edit Modal -->
+  <div class="modal" id="editModal" hidden aria-hidden="true">
+    <div class="modalCard" role="dialog" aria-modal="true" aria-label="編輯單品">
+      <div class="modalHead">
+        <div class="modalTitle">編輯單品</div>
+        <button class="iconBtn" id="btnCloseEdit" aria-label="關閉">×</button>
+      </div>
 
-.empty{
-  margin-top:42px;
-  text-align:center;
-  color:var(--muted);
-  padding:18px;
-  border:1px dashed #ddd;
-  border-radius:18px;
-  background:rgba(255,255,255,.55);
-}
+      <div class="field">
+        <div class="label">名稱 / 描述</div>
+        <input class="input" id="inTitle" placeholder="例如：深灰色立領羽絨外套，輕巧保暖" />
+      </div>
 
-/* ===== Bottom Nav ===== */
-.bottomNav{
-  position:fixed;
-  left:0; right:0; bottom:0;
-  padding:10px 12px calc(10px + env(safe-area-inset-bottom));
-  background:rgba(255,255,255,.92);
-  backdrop-filter:blur(10px);
-  border-top:1px solid var(--stroke);
-  display:flex;
-  justify-content:space-around;
-  gap:8px;
-  z-index:40;
-}
-.bottomNav button{
-  flex:1;
-  border:0;
-  background:transparent;
-  padding:10px 0;
-  font-weight:800;
-  color:#666;
-  border-radius:14px;
-}
-.bottomNav button.on{
-  color:#b15a6e;
-  background:rgba(177,90,110,.10);
-}
+      <div class="field">
+        <div class="label">適穿溫度範圍（°C）</div>
+        <div class="row2">
+          <input class="input" id="inMin" inputmode="numeric" placeholder="0" />
+          <div class="dash">-</div>
+          <input class="input" id="inMax" inputmode="numeric" placeholder="18" />
+        </div>
+      </div>
 
-/* ===== FABs ===== */
-.fab{
-  position:fixed;
-  right:18px;
-  width:62px;
-  height:62px;
-  border-radius:999px;
-  border:0;
-  background:var(--primary);
-  color:#fff;
-  font-size:32px;
-  box-shadow:0 10px 28px rgba(0,0,0,.22);
-}
-.fab--add{
-  bottom:calc(92px + env(safe-area-inset-bottom));
-  z-index:50;
-}
-.fab--quick{
-  bottom:calc(164px + env(safe-area-inset-bottom));
-  z-index:51;
-  width:54px;
-  height:54px;
-  font-size:22px;
-  background:#fff;
-  color:#222;
-  border:1px solid var(--stroke);
-}
+      <div class="field">
+        <div class="label">修改分類</div>
+        <div class="catGrid" id="catGrid"></div>
+      </div>
 
-/* ===== + menu ===== */
-.menu{
-  position:fixed;
-  right:18px;
-  bottom:calc(160px + env(safe-area-inset-bottom));
-  width:230px;
-  background:#3b3b3b;
-  border-radius:18px;
-  overflow:hidden;
-  box-shadow:0 14px 40px rgba(0,0,0,.25);
-  z-index:60;
-}
-.menu button{
-  width:100%;
-  border:0;
-  background:transparent;
-  color:#fff;
-  padding:14px 14px;
-  text-align:left;
-  font-weight:800;
-}
-.menu button + button{
-  border-top:1px solid rgba(255,255,255,.10);
-}
-.menu .danger{
-  color:#ffb4b4;
-}
+      <button class="btnPrimary" id="btnSaveEdit">儲存修改</button>
+      <button class="btnDanger" id="btnDeleteEdit">刪除此單品</button>
+    </div>
+  </div>
 
-/* ===== Modal / Form ===== */
-.modal{
-  position:fixed;
-  inset:0;
-  background:rgba(0,0,0,.35);
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  padding:16px;
-  z-index:100;
-}
-.modalCard{
-  width:min(520px, 100%);
-  background:#fff;
-  border-radius:28px;
-  padding:16px;
-  box-shadow:0 18px 60px rgba(0,0,0,.25);
-  max-height:calc(100vh - 32px);
-  overflow:auto;
-  -webkit-overflow-scrolling:touch;
-}
-.modalHead{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:6px 4px 12px;
-}
-.modalTitle{
-  font-weight:900;
-  font-size:18px;
-}
-.iconBtn{
-  width:40px;
-  height:40px;
-  border-radius:999px;
-  border:1px solid var(--stroke);
-  background:#fff;
-  font-weight:900;
-}
+  <!-- Quick Add Modal -->
+  <div class="modal" id="quickModal" hidden aria-hidden="true">
+    <div class="modalCard" role="dialog" aria-modal="true" aria-label="快速加入基礎單品">
+      <div class="modalHead">
+        <div class="modalTitle">⚡ 快速加入基礎單品</div>
+        <button class="iconBtn" id="btnCloseQuick" aria-label="關閉">×</button>
+      </div>
+      <div class="quickGrid" id="quickGrid"></div>
+    </div>
+  </div>
 
-.field{ margin-top:12px; }
-.label{
-  font-weight:800;
-  color:#666;
-  font-size:13px;
-  margin:0 0 8px;
-}
+  <!-- Pick Sheet (Bottom Sheet) -->
+  <div class="sheetMask" id="pickMask" hidden aria-hidden="true"></div>
+  <div class="sheet" id="pickSheet" hidden aria-hidden="true">
+    <div class="sheetHead">
+      <div class="sheetTitle" id="pickTitle">選擇</div>
+      <button class="iconBtn" id="btnClosePick" aria-label="關閉">×</button>
+    </div>
+    <div class="sheetBody" id="pickBody"></div>
+  </div>
 
-.input{
-  width:100%;
-  border:1px solid var(--stroke);
-  border-radius:16px;
-  padding:12px 12px;
-  font-size:16px;
-  outline:none;
-  background:#fff;
-}
-.input:focus{
-  border-color:#b15a6e;
-  box-shadow:0 0 0 3px rgba(177,90,110,.12);
-}
+  <nav class="bottomNav" aria-label="底部導覽">
+    <button id="tabWardrobe" class="on">衣櫃</button>
+    <button id="tabMix">自選</button>
+    <button id="tabInspo">靈感</button>
+    <button id="tabMe">個人</button>
+  </nav>
 
-.row2{
-  display:grid;
-  grid-template-columns:1fr 30px 1fr;
-  gap:8px;
-  align-items:center;
-}
-.dash{
-  text-align:center;
-  color:#888;
-  font-weight:900;
-}
-
-.catGrid{
-  display:grid;
-  grid-template-columns:repeat(2, 1fr);
-  gap:10px;
-}
-.catBtn{
-  border:1px solid var(--stroke);
-  background:#fff;
-  border-radius:16px;
-  padding:14px 12px;
-  font-weight:900;
-  text-align:center;
-}
-.catBtn.on{
-  background:#2b2b2b;
-  color:#fff;
-  border-color:#2b2b2b;
-}
-
-.btnPrimary{
-  width:100%;
-  margin-top:14px;
-  background:#9b6cff;
-  border:0;
-  color:#fff;
-  border-radius:999px;
-  padding:14px;
-  font-weight:900;
-  box-shadow:0 10px 26px rgba(155,108,255,.28);
-}
-.btnPrimary:active{ transform:translateY(1px); }
-
-.btnDanger{
-  width:100%;
-  margin-top:10px;
-  background:#ffecec;
-  border:1px solid #ffd2d2;
-  color:#b42318;
-  border-radius:999px;
-  padding:14px;
-  font-weight:900;
-}
-
-/* ===== Quick Add ===== */
-.quickGrid{
-  display:grid;
-  grid-template-columns:repeat(2, 1fr);
-  gap:12px;
-  padding:6px 2px 2px;
-}
-.quickItem{
-  border:1px solid var(--stroke);
-  background:#fff;
-  border-radius:18px;
-  padding:14px;
-  display:flex;
-  gap:12px;
-  align-items:center;
-  font-weight:900;
-}
-.dot{
-  width:46px; height:46px;
-  border-radius:999px;
-  border:1px solid var(--stroke);
-  background:#eee;
-}
-
-/* ===== Mix & Match ===== */
-.mixGrid{
-  margin-top:12px;
-  display:grid;
-  grid-template-columns:repeat(2, 1fr);
-  gap:12px;
-}
-.slot{
-  border:3px dashed rgba(0,0,0,.12);
-  background:rgba(255,255,255,.45);
-  border-radius:22px;
-  padding:14px;
-  height:160px;
-  position:relative;
-  text-align:left;
-}
-.slot--big{
-  grid-column:1 / -1;
-  height:220px;
-}
-.slotHint{
-  position:absolute;
-  left:12px; top:12px;
-  font-weight:900;
-  color:rgba(0,0,0,.35);
-}
-.slotThumb{
-  position:absolute;
-  inset:0;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  padding:18px;
-}
-.slotThumb img{
-  width:100%;
-  height:100%;
-  object-fit:cover;
-  border-radius:18px;
-  border:1px solid var(--stroke);
-  background:#fff;
-}
-
-.mixActions{
-  position:fixed;
-  left:0; right:0;
-  bottom:calc(70px + env(safe-area-inset-bottom));
-  padding:12px 14px;
-  display:grid;
-  gap:10px;
-  background:linear-gradient(to top, rgba(251,246,239,.96), rgba(251,246,239,.10));
-}
-.btnSoft{
-  width:100%;
-  border-radius:999px;
-  padding:14px;
-  font-weight:900;
-  border:1px solid var(--stroke);
-  background:rgba(255,255,255,.78);
-}
-.btnSoft:disabled{ opacity:.55; }
-
-/* ===== Bottom Sheet Picker ===== */
-.sheet{
-  position:fixed;
-  inset:0;
-  background:rgba(0,0,0,.35);
-  display:flex;
-  align-items:flex-end;
-  justify-content:center;
-  padding:10px;
-  z-index:120;
-}
-.sheetCard{
-  width:min(560px, 100%);
-  background:#fff;
-  border-radius:26px;
-  padding:12px;
-  box-shadow:0 18px 60px rgba(0,0,0,.25);
-  max-height:80vh;
-  overflow:auto;
-  -webkit-overflow-scrolling:touch;
-}
-.sheetHead{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:6px 4px 10px;
-}
-.sheetTitle{ font-weight:900; }
-
-.sheetNone{
-  width:100%;
-  border:1px dashed rgba(0,0,0,.18);
-  border-radius:18px;
-  padding:14px;
-  background:rgba(0,0,0,.03);
-  font-weight:900;
-  color:#666;
-}
-
-.pickList{
-  margin-top:10px;
-  display:grid;
-  grid-template-columns:1fr;
-  gap:10px;
-}
-.pickRow{
-  display:flex;
-  gap:12px;
-  align-items:center;
-  border:1px solid var(--stroke);
-  border-radius:18px;
-  padding:12px;
-  background:#fff;
-}
-.pickRow img{
-  width:64px;
-  height:64px;
-  object-fit:cover;
-  border-radius:14px;
-  border:1px solid var(--stroke);
-  background:#f3f3f3;
-}
-.pickMeta{
-  display:flex;
-  flex-direction:column;
-  gap:4px;
-}
-.pickName{ font-weight:900; }
-.pickSub{ color:#777; font-size:12px; }
-
-/* ===== Toast ===== */
-.toast{
-  position:fixed;
-  left:50%;
-  transform:translateX(-50%);
-  bottom:calc(140px + env(safe-area-inset-bottom));
-  background:#2b2b2b;
-  color:#fff;
-  padding:10px 14px;
-  border-radius:999px;
-  font-weight:900;
-  box-shadow:0 10px 26px rgba(0,0,0,.25);
-  z-index:200;
-}
+  <script type="module" src="./app.js?v=1"></script>
+</body>
+</html>
