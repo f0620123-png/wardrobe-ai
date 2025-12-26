@@ -1,65 +1,186 @@
 /* docs/app.js
-   My Wardrobe - vanilla JS
-   - localStorage persistence
-   - FAB menu: Photo Library / Camera / Quick add
-   - Card click -> edit modal (save/delete)
-   - AI analyze color/material via Worker endpoint (vision + text)
-   - Service Worker: force update / clear caches
-*/
+ * Wardrobe AI (vanilla JS)
+ * - localStorage persistence
+ * - image picker / camera / quick add
+ * - edit modal with AI color/material inference via Cloudflare Worker
+ * - service worker update helpers (iOS-friendly)
+ */
 
 (() => {
-  // ====== CONFIG ======
-  // 重要：部署好 Worker 後，把這行改成你的 Worker URL
-  // 例如: https://wardrobe-ai-proxy.yourname.workers.dev/analyze
-  const AI_ENDPOINT = "https://YOUR-WORKER-DOMAIN.workers.dev/analyze";
+  "use strict";
 
-  const LS_KEY_ITEMS = "wardrobe_items_v1";
-  const LS_KEY_UI = "wardrobe_ui_v1";
-  const APP_VERSION = "2025-12-26.1";
+  // ====== Config ======
+  const STORAGE_KEY = "wardrobe_items_v3";
+  const SETTINGS_KEY = "wardrobe_settings_v2";
 
-  const CATS = ["全部", "上衣", "下著", "內搭", "外套", "鞋子", "配件"];
+  // 你的 Worker 預設網址（可在「設定」裡改）
+  const DEFAULT_AI_ENDPOINT = "https://autumn-cell-d032.f0620123.workers.dev";
 
-  // 你截圖中「快速加入基礎單品」範例
-  const QUICK_ITEMS = [
-    { title: "長袖打底（白）", cat: "內搭", tMin: 10, tMax: 22 },
-    { title: "長袖打底（黑）", cat: "內搭", tMin: 10, tMax: 22 },
-    { title: "短袖T恤（白）", cat: "上衣", tMin: 22, tMax: 32 },
-    { title: "短袖T恤（黑）", cat: "上衣", tMin: 22, tMax: 32 },
-    { title: "連帽外套（灰）", cat: "外套", tMin: 12, tMax: 24 },
-    { title: "牛仔外套", cat: "外套", tMin: 15, tMax: 26 },
-    { title: "牛仔寬褲", cat: "下著", tMin: 10, tMax: 26 },
-    { title: "直筒牛仔褲", cat: "下著", tMin: 10, tMax: 26 }
+  // 圖片送 AI 前最大邊長（越小越省、越快）
+  const MAX_IMAGE_SIDE = 1024;
+  const JPEG_QUALITY = 0.85;
+
+  // Quick add presets
+  const QUICK_PRESETS = [
+    { name: "長袖打底（白）", cat: "內搭", tmin: 8, tmax: 20 },
+    { name: "長袖打底（黑）", cat: "內搭", tmin: 8, tmax: 20 },
+    { name: "短袖T恤（白）", cat: "上衣", tmin: 18, tmax: 32 },
+    { name: "短袖T恤（黑）", cat: "上衣", tmin: 18, tmax: 32 },
+    { name: "連帽外套（灰）", cat: "外套", tmin: 10, tmax: 22 },
+    { name: "牛仔外套", cat: "外套", tmin: 12, tmax: 26 },
+    { name: "牛仔寬褲", cat: "下著", tmin: 10, tmax: 28 },
+    { name: "直筒牛仔褲", cat: "下著", tmin: 10, tmax: 28 },
   ];
 
-  // Fit / Length（你新截圖有這兩個欄位）
-  const FIT_OPTS = ["", "Oversized", "Regular", "Slim", "Relaxed"];
-  const LEN_OPTS = ["", "Cropped", "Hip-length", "Long", "Maxi"];
+  const CATS = ["全部", "上衣", "下著", "內搭", "外套", "鞋子", "配件", "其他"];
 
-  // ====== STATE ======
-  let state = {
-    tab: "衣櫃",          // bottom nav
-    cat: "全部",          // filter chip
-    items: [],
-    menuOpen: false,
-    modal: null,          // { type, ... }
-  };
+  // ====== State ======
+  let items = [];
+  let activeCat = "全部";
+  let activeTab = "衣櫃"; // 保留（你底部 nav 用得到）
+  let ui = {};
+  let settings = loadSettings();
 
-  // ====== HELPERS ======
-  const $ = (sel, el = document) => el.querySelector(sel);
-  const $$ = (sel, el = document) => Array.from(el.querySelectorAll(sel));
+  // ====== Boot ======
+  document.addEventListener("DOMContentLoaded", () => {
+    ensureDOM();
+    wireEvents();
+    items = loadItems();
+    renderAll();
 
-  function uid() {
-    return Math.random().toString(16).slice(2) + "-" + Date.now().toString(16);
+    // Service Worker
+    setupServiceWorker();
+
+    // 初次顯示 endpoint
+    updateEndpointBadge();
+  });
+
+  // ====== DOM bootstrap (若你的 index.html 已有就會直接用) ======
+  function ensureDOM() {
+    const $ = (s) => document.querySelector(s);
+
+    ui.app = $(".app") || document.body;
+
+    ui.headerBrand = $(".header .brand");
+    ui.headerTitle = $(".header h1");
+    ui.headerSub = $(".header .sub");
+
+    ui.chips = $(".chips");
+    ui.grid = $(".grid");
+    ui.empty = $(".empty");
+
+    ui.bottomNav = $(".bottomNav");
+    ui.fab = $(".fab");
+    ui.menu = $(".menu");
+
+    // 若 chips/grid 不存在，直接建立（避免「功能都在但介面跑掉/不能點」時 JS 掛掉）
+    if (!ui.chips) {
+      ui.chips = document.createElement("div");
+      ui.chips.className = "chips";
+      ui.app.appendChild(ui.chips);
+    }
+    if (!ui.grid) {
+      ui.grid = document.createElement("div");
+      ui.grid.className = "grid";
+      ui.app.appendChild(ui.grid);
+    }
+    if (!ui.empty) {
+      ui.empty = document.createElement("div");
+      ui.empty.className = "empty";
+      ui.empty.style.display = "none";
+      ui.app.appendChild(ui.empty);
+    }
+
+    if (!ui.fab) {
+      ui.fab = document.createElement("button");
+      ui.fab.className = "fab";
+      ui.fab.type = "button";
+      ui.fab.textContent = "+";
+      document.body.appendChild(ui.fab);
+    }
+
+    if (!ui.menu) {
+      ui.menu = document.createElement("div");
+      ui.menu.className = "menu";
+      ui.menu.hidden = true;
+      ui.menu.innerHTML = `
+        <button data-act="pick">照片圖庫</button>
+        <button data-act="camera">拍照</button>
+        <button data-act="quick">⚡ 快速加入基礎單品</button>
+        <button class="danger" data-act="settings">設定 / 更新</button>
+      `;
+      document.body.appendChild(ui.menu);
+    }
+
+    // chips render
+    ui.chips.innerHTML = "";
+    CATS.forEach((cat) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "chip" + (cat === activeCat ? " on" : "");
+      b.textContent = cat;
+      b.dataset.cat = cat;
+      ui.chips.appendChild(b);
+    });
+
+    // empty text default
+    ui.empty.textContent = "尚無衣物，點右下角 + 新增";
   }
 
-  function clampNum(n, def = 0) {
-    const x = Number(n);
-    return Number.isFinite(x) ? x : def;
+  // ====== Events ======
+  function wireEvents() {
+    // Chips filter
+    ui.chips.addEventListener("click", (e) => {
+      const btn = e.target.closest(".chip");
+      if (!btn) return;
+      activeCat = btn.dataset.cat || "全部";
+      [...ui.chips.querySelectorAll(".chip")].forEach((c) =>
+        c.classList.toggle("on", c.dataset.cat === activeCat)
+      );
+      renderGrid();
+    });
+
+    // FAB menu
+    ui.fab.addEventListener("click", () => {
+      ui.menu.hidden = !ui.menu.hidden;
+    });
+
+    // Close menu on outside click
+    document.addEventListener("click", (e) => {
+      if (ui.menu.hidden) return;
+      const inMenu = e.target.closest(".menu");
+      const inFab = e.target.closest(".fab");
+      if (!inMenu && !inFab) ui.menu.hidden = true;
+    });
+
+    // Menu actions
+    ui.menu.addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      ui.menu.hidden = true;
+
+      const act = btn.dataset.act;
+      if (act === "pick") return pickImage(false);
+      if (act === "camera") return pickImage(true);
+      if (act === "quick") return openQuickAddSheet();
+      if (act === "settings") return openSettingsSheet();
+    });
+
+    // Card click -> edit
+    ui.grid.addEventListener("click", (e) => {
+      const card = e.target.closest(".card");
+      if (!card) return;
+      const id = card.dataset.id;
+      const item = items.find((x) => x.id === id);
+      if (!item) return;
+      openEditModal(item);
+    });
   }
 
+  // ====== Storage ======
   function loadItems() {
     try {
-      const raw = localStorage.getItem(LS_KEY_ITEMS);
+      const raw = localStorage.getItem(STORAGE_KEY);
       const arr = raw ? JSON.parse(raw) : [];
       return Array.isArray(arr) ? arr : [];
     } catch {
@@ -67,643 +188,682 @@
     }
   }
 
-  function saveItems(items) {
-    localStorage.setItem(LS_KEY_ITEMS, JSON.stringify(items));
+  function saveItems() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    renderHeaderCount();
   }
 
-  function loadUI() {
+  function loadSettings() {
     try {
-      const raw = localStorage.getItem(LS_KEY_UI);
-      const obj = raw ? JSON.parse(raw) : {};
-      return obj && typeof obj === "object" ? obj : {};
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      const s = raw ? JSON.parse(raw) : {};
+      return {
+        aiEndpoint: s.aiEndpoint || DEFAULT_AI_ENDPOINT,
+      };
     } catch {
-      return {};
+      return { aiEndpoint: DEFAULT_AI_ENDPOINT };
     }
   }
 
-  function saveUI(ui) {
-    localStorage.setItem(LS_KEY_UI, JSON.stringify(ui));
+  function saveSettings() {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    updateEndpointBadge();
   }
 
-  function escapeHtml(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
+  // ====== Render ======
+  function renderAll() {
+    renderHeaderCount();
+    renderGrid();
   }
 
-  function fmtTempRange(tMin, tMax) {
-    const a = clampNum(tMin, 0);
-    const b = clampNum(tMax, 0);
-    if (!Number.isFinite(a) || !Number.isFinite(b)) return "";
-    if (a === 0 && b === 0) return "";
-    return `${a}–${b}°C`;
+  function renderHeaderCount() {
+    const count = items.length;
+    if (ui.headerSub) ui.headerSub.textContent = `今天收集了 ${count} 件寶貝`;
   }
 
-  function todayCount() {
-    // 以「今天新增」計算：createdAt 在同一天
-    const now = new Date();
-    const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
-    const start = new Date(y, m, d).getTime();
-    const end = start + 24 * 60 * 60 * 1000;
-    return state.items.filter(it => it.createdAt >= start && it.createdAt < end).length;
+  function renderGrid() {
+    ui.grid.innerHTML = "";
+
+    const list =
+      activeCat === "全部"
+        ? items
+        : items.filter((x) => (x.cat || "其他") === activeCat);
+
+    if (list.length === 0) {
+      ui.empty.style.display = "block";
+      return;
+    }
+    ui.empty.style.display = "none";
+
+    // 最新在前（你覺得需要也可改成 id/名稱排序）
+    const sorted = [...list].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+    for (const it of sorted) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "card";
+      card.dataset.id = it.id;
+
+      const img = document.createElement("img");
+      img.alt = it.name || "item";
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.src = it.imageDataUrl || "";
+      if (!it.imageDataUrl) img.style.background = "#f2f2f2";
+
+      const title = document.createElement("div");
+      title.className = "cardTitle";
+      title.textContent = it.name || "（未命名）";
+
+      const tag = document.createElement("div");
+      tag.className = "tag";
+      const tempText =
+        isNum(it.tmin) && isNum(it.tmax) ? `${it.tmin}–${it.tmax}°C` : "未設定溫度";
+      const catText = it.cat || "其他";
+
+      // 顏色/材質顯示（若有）
+      const cm = [];
+      if (it.color?.name) cm.push(it.color.name);
+      if (it.material?.name) cm.push(it.material.name);
+
+      tag.textContent = `${catText} · ${tempText}${cm.length ? " · " + cm.join(" / ") : ""}`;
+
+      card.appendChild(img);
+      card.appendChild(title);
+      card.appendChild(tag);
+      ui.grid.appendChild(card);
+    }
   }
 
-  function filteredItems() {
-    if (state.tab !== "衣櫃") return [];
-    if (state.cat === "全部") return [...state.items].sort((a, b) => b.updatedAt - a.updatedAt);
-    return state.items
-      .filter(it => it.cat === state.cat)
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+  // ====== Add item ======
+  async function pickImage(useCamera) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    if (useCamera) input.capture = "environment";
+
+    input.addEventListener("change", async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+
+      const resizedDataUrl = await fileToResizedDataUrl(file, MAX_IMAGE_SIDE, JPEG_QUALITY);
+
+      const it = {
+        id: cryptoId(),
+        name: "",
+        cat: "上衣",
+        tmin: null,
+        tmax: null,
+        imageDataUrl: resizedDataUrl,
+        color: null,
+        material: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      items.unshift(it);
+      saveItems();
+      renderGrid();
+
+      openEditModal(it);
+    });
+
+    input.click();
   }
 
-  // ====== SERVICE WORKER / FORCE REFRESH ======
-  async function swRegister() {
+  function openQuickAddSheet() {
+    const modal = createModal({
+      title: "⚡ 快速加入基礎單品",
+      body: () => {
+        const wrap = document.createElement("div");
+        wrap.style.display = "grid";
+        wrap.style.gridTemplateColumns = "repeat(2, 1fr)";
+        wrap.style.gap = "10px";
+
+        QUICK_PRESETS.forEach((p) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "catBtn";
+          b.textContent = p.name;
+          b.addEventListener("click", () => {
+            const it = {
+              id: cryptoId(),
+              name: p.name,
+              cat: p.cat,
+              tmin: p.tmin,
+              tmax: p.tmax,
+              imageDataUrl: "",
+              color: null,
+              material: null,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            };
+            items.unshift(it);
+            saveItems();
+            renderGrid();
+            closeModal(modal);
+            openEditModal(it);
+          });
+          wrap.appendChild(b);
+        });
+
+        return wrap;
+      },
+      footerButtons: [
+        { text: "取消", kind: "ghost", onClick: (m) => closeModal(m) },
+      ],
+    });
+
+    document.body.appendChild(modal);
+  }
+
+  // ====== Edit modal ======
+  function openEditModal(it) {
+    const modal = createModal({
+      title: "編輯單品",
+      body: () => buildEditForm(it, modal),
+      footerButtons: [], // inside form
+    });
+    document.body.appendChild(modal);
+  }
+
+  function buildEditForm(it, modal) {
+    const container = document.createElement("div");
+
+    // Name
+    container.appendChild(fieldLabel("名稱 / 描述"));
+    const nameInput = document.createElement("input");
+    nameInput.className = "input";
+    nameInput.placeholder = "例如：深灰色立領羽絨外套，輕巧保暖";
+    nameInput.value = it.name || "";
+    container.appendChild(nameInput);
+
+    // Temp range
+    container.appendChild(fieldLabel("適穿溫度範圍（°C）"));
+    const row = document.createElement("div");
+    row.className = "row2";
+    const tmin = document.createElement("input");
+    tmin.className = "input";
+    tmin.inputMode = "numeric";
+    tmin.placeholder = "0";
+    tmin.value = isNum(it.tmin) ? String(it.tmin) : "";
+    const dash = document.createElement("div");
+    dash.className = "dash";
+    dash.textContent = "-";
+    const tmax = document.createElement("input");
+    tmax.className = "input";
+    tmax.inputMode = "numeric";
+    tmax.placeholder = "18";
+    tmax.value = isNum(it.tmax) ? String(it.tmax) : "";
+    row.appendChild(tmin);
+    row.appendChild(dash);
+    row.appendChild(tmax);
+    container.appendChild(row);
+
+    // AI inferred
+    const aiBlock = document.createElement("div");
+    aiBlock.style.marginTop = "12px";
+
+    const aiTitle = document.createElement("div");
+    aiTitle.className = "label";
+    aiTitle.textContent = "AI 判斷（顏色 / 材質）";
+    aiBlock.appendChild(aiTitle);
+
+    const aiRow = document.createElement("div");
+    aiRow.style.display = "grid";
+    aiRow.style.gridTemplateColumns = "1fr 1fr";
+    aiRow.style.gap = "10px";
+
+    const colorInput = document.createElement("input");
+    colorInput.className = "input";
+    colorInput.placeholder = "顏色（例如：墨綠 / #2F4F3E）";
+    colorInput.value = it.color?.name
+      ? `${it.color.name}${it.color.hex ? " / " + it.color.hex : ""}`
+      : "";
+
+    const materialInput = document.createElement("input");
+    materialInput.className = "input";
+    materialInput.placeholder = "材質（例如：棉 / 牛仔 / 羊毛）";
+    materialInput.value = it.material?.name || "";
+
+    aiRow.appendChild(colorInput);
+    aiRow.appendChild(materialInput);
+    aiBlock.appendChild(aiRow);
+
+    const aiBtn = document.createElement("button");
+    aiBtn.type = "button";
+    aiBtn.className = "btnPrimary";
+    aiBtn.style.marginTop = "12px";
+    aiBtn.textContent = "AI 自動判斷顏色與材質";
+    aiBlock.appendChild(aiBtn);
+
+    const aiHint = document.createElement("div");
+    aiHint.style.marginTop = "8px";
+    aiHint.style.color = "#666";
+    aiHint.style.fontSize = "12px";
+    aiHint.textContent =
+      "會用你目前的「描述」+（若有）照片做判斷；若不確定會降低信心值。";
+    aiBlock.appendChild(aiHint);
+
+    const aiStatus = document.createElement("div");
+    aiStatus.style.marginTop = "8px";
+    aiStatus.style.color = "#666";
+    aiStatus.style.fontSize = "12px";
+    aiBlock.appendChild(aiStatus);
+
+    container.appendChild(aiBlock);
+
+    // Category
+    container.appendChild(fieldLabel("修改分類"));
+    const catGrid = document.createElement("div");
+    catGrid.className = "catGrid";
+    const cats = ["上衣", "下著", "內搭", "外套", "鞋子", "配件", "其他"];
+    let catVal = it.cat || "其他";
+    cats.forEach((c) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "catBtn" + (catVal === c ? " on" : "");
+      b.textContent = c;
+      b.addEventListener("click", () => {
+        catVal = c;
+        [...catGrid.querySelectorAll(".catBtn")].forEach((x) =>
+          x.classList.toggle("on", x.textContent === c)
+        );
+      });
+      catGrid.appendChild(b);
+    });
+    container.appendChild(catGrid);
+
+    // Buttons
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "btnPrimary";
+    saveBtn.textContent = "儲存修改";
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "btnDanger";
+    delBtn.textContent = "刪除此單品";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "catBtn";
+    cancelBtn.style.width = "100%";
+    cancelBtn.style.marginTop = "10px";
+    cancelBtn.textContent = "取消";
+
+    container.appendChild(saveBtn);
+    container.appendChild(delBtn);
+    container.appendChild(cancelBtn);
+
+    // AI click
+    aiBtn.addEventListener("click", async () => {
+      aiStatus.textContent = "AI 分析中…";
+      aiBtn.disabled = true;
+
+      try {
+        const payload = {
+          text: nameInput.value.trim(),
+          imageDataUrl: it.imageDataUrl || null,
+        };
+
+        const res = await fetch(joinUrl(settings.aiEndpoint, "/analyze"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+          const t = await safeText(res);
+          throw new Error(`AI 服務錯誤：${res.status} ${t || ""}`.trim());
+        }
+
+        const data = await res.json();
+
+        // 期望 data.result 為 JSON
+        const r = data?.result || data;
+
+        // color
+        if (r?.color?.name || r?.color_name) {
+          const cname = r.color?.name || r.color_name;
+          const chex = r.color?.hex || r.color_hex || "";
+          it.color = { name: cname, hex: chex || "" };
+          colorInput.value = `${cname}${chex ? " / " + chex : ""}`;
+        }
+
+        // material
+        if (r?.material?.name || r?.material_name) {
+          const mname = r.material?.name || r.material_name;
+          it.material = { name: mname };
+          materialInput.value = mname;
+        }
+
+        const conf = r?.confidence ?? r?.conf ?? null;
+        const note = r?.notes || r?.comment || "";
+        aiStatus.textContent = `完成${conf != null ? `（信心 ${Math.round(conf * 100)}%）` : ""}${note ? "：" + note : ""}`;
+      } catch (err) {
+        aiStatus.textContent = (err && err.message) ? err.message : "AI 分析失敗";
+      } finally {
+        aiBtn.disabled = false;
+      }
+    });
+
+    // Save
+    saveBtn.addEventListener("click", () => {
+      it.name = nameInput.value.trim();
+      it.tmin = parseNumOrNull(tmin.value);
+      it.tmax = parseNumOrNull(tmax.value);
+      it.cat = catVal;
+
+      // allow manual override
+      const cText = colorInput.value.trim();
+      if (cText) {
+        const parts = cText.split("/").map((s) => s.trim());
+        it.color = { name: parts[0], hex: parts[1] || (it.color?.hex || "") };
+      }
+      const mText = materialInput.value.trim();
+      if (mText) it.material = { name: mText };
+
+      it.updatedAt = Date.now();
+      saveItems();
+      renderGrid();
+      closeModal(modal);
+    });
+
+    // Delete
+    delBtn.addEventListener("click", () => {
+      items = items.filter((x) => x.id !== it.id);
+      saveItems();
+      renderGrid();
+      closeModal(modal);
+    });
+
+    // Cancel
+    cancelBtn.addEventListener("click", () => closeModal(modal));
+
+    return container;
+  }
+
+  // ====== Settings / Update sheet ======
+  function openSettingsSheet() {
+    const modal = createModal({
+      title: "設定 / 更新",
+      body: () => {
+        const wrap = document.createElement("div");
+
+        wrap.appendChild(fieldLabel("AI 服務（Cloudflare Worker）"));
+        const endpoint = document.createElement("input");
+        endpoint.className = "input";
+        endpoint.placeholder = "例如：https://xxx.yyy.workers.dev";
+        endpoint.value = settings.aiEndpoint || DEFAULT_AI_ENDPOINT;
+        wrap.appendChild(endpoint);
+
+        const save = document.createElement("button");
+        save.type = "button";
+        save.className = "btnPrimary";
+        save.textContent = "儲存設定";
+        wrap.appendChild(save);
+
+        const hr = document.createElement("div");
+        hr.style.height = "12px";
+        wrap.appendChild(hr);
+
+        const updateBtn = document.createElement("button");
+        updateBtn.type = "button";
+        updateBtn.className = "catBtn";
+        updateBtn.style.width = "100%";
+        updateBtn.textContent = "強制檢查更新（Service Worker）";
+        wrap.appendChild(updateBtn);
+
+        const hardBtn = document.createElement("button");
+        hardBtn.type = "button";
+        hardBtn.className = "btnDanger";
+        hardBtn.textContent = "強制清除快取並重載（解決卡頓/更新卡住）";
+        wrap.appendChild(hardBtn);
+
+        const msg = document.createElement("div");
+        msg.style.marginTop = "8px";
+        msg.style.fontSize = "12px";
+        msg.style.color = "#666";
+        wrap.appendChild(msg);
+
+        save.addEventListener("click", () => {
+          settings.aiEndpoint = endpoint.value.trim() || DEFAULT_AI_ENDPOINT;
+          saveSettings();
+          msg.textContent = "已儲存";
+        });
+
+        updateBtn.addEventListener("click", async () => {
+          msg.textContent = "檢查更新中…";
+          const ok = await swCheckAndUpdate();
+          msg.textContent = ok ? "已觸發更新（若有新版會自動重載）" : "未偵測到更新或瀏覽器不支援";
+        });
+
+        hardBtn.addEventListener("click", async () => {
+          msg.textContent = "清除中…";
+          await hardReload();
+        });
+
+        return wrap;
+      },
+      footerButtons: [{ text: "關閉", kind: "ghost", onClick: (m) => closeModal(m) }],
+    });
+
+    document.body.appendChild(modal);
+  }
+
+  function updateEndpointBadge() {
+    // 非必要，只是方便你確認 endpoint；若 header 不存在就略過
+    if (!ui.headerBrand) return;
+    // 不動你的 UI 風格，只在 title attribute 放資訊
+    ui.headerBrand.title = `AI Endpoint: ${settings.aiEndpoint}`;
+  }
+
+  // ====== Modal helper ======
+  function createModal({ title, body, footerButtons }) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal";
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) closeModal(overlay);
+    });
+
+    const card = document.createElement("div");
+    card.className = "modalCard";
+
+    const head = document.createElement("div");
+    head.className = "modalHead";
+
+    const h = document.createElement("div");
+    h.className = "modalTitle";
+    h.textContent = title || "";
+
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "iconBtn";
+    x.textContent = "×";
+    x.addEventListener("click", () => closeModal(overlay));
+
+    head.appendChild(h);
+    head.appendChild(x);
+
+    const content = document.createElement("div");
+    content.appendChild(typeof body === "function" ? body() : body);
+
+    card.appendChild(head);
+    card.appendChild(content);
+
+    if (footerButtons && footerButtons.length) {
+      const foot = document.createElement("div");
+      foot.style.marginTop = "12px";
+      foot.style.display = "grid";
+      foot.style.gap = "10px";
+      footerButtons.forEach((b) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = b.kind === "primary" ? "btnPrimary" : "catBtn";
+        btn.style.width = "100%";
+        btn.textContent = b.text;
+        btn.addEventListener("click", () => b.onClick && b.onClick(overlay));
+        foot.appendChild(btn);
+      });
+      card.appendChild(foot);
+    }
+
+    overlay.appendChild(card);
+    return overlay;
+  }
+
+  function closeModal(modalEl) {
+    if (modalEl && modalEl.parentNode) modalEl.parentNode.removeChild(modalEl);
+  }
+
+  function fieldLabel(text) {
+    const l = document.createElement("div");
+    l.className = "label";
+    l.textContent = text;
+    return l;
+  }
+
+  // ====== Image resize ======
+  async function fileToResizedDataUrl(file, maxSide, quality) {
+    const img = await readFileAsImage(file);
+    const { w, h } = fitSize(img.naturalWidth || img.width, img.naturalHeight || img.height, maxSide);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d", { alpha: false });
+
+    // draw
+    ctx.drawImage(img, 0, 0, w, h);
+
+    // jpeg for size
+    return canvas.toDataURL("image/jpeg", quality);
+  }
+
+  function fitSize(w, h, maxSide) {
+    if (!w || !h) return { w: maxSide, h: maxSide };
+    const max = Math.max(w, h);
+    if (max <= maxSide) return { w, h };
+    const scale = maxSide / max;
+    return { w: Math.round(w * scale), h: Math.round(h * scale) };
+  }
+
+  function readFileAsImage(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onerror = () => reject(new Error("讀取圖片失敗"));
+      fr.onload = () => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("解析圖片失敗"));
+        img.src = fr.result;
+      };
+      fr.readAsDataURL(file);
+    });
+  }
+
+  // ====== Service Worker: register + update ======
+  async function setupServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
 
     try {
       const reg = await navigator.serviceWorker.register("./sw.js", { scope: "./" });
 
-      // 若有 waiting 的新版 sw：提示更新
+      // 若已有 waiting，提示直接更新（iOS 常卡）
       if (reg.waiting) {
-        // 自動切新版 + 刷新（避免你一直看到舊版）
-        await swSkipWaiting(reg);
+        reg.waiting.postMessage({ type: "SKIP_WAITING" });
       }
 
+      // 當新 SW 安裝完成 -> 直接啟用並 reload
       reg.addEventListener("updatefound", () => {
-        const newWorker = reg.installing;
-        if (!newWorker) return;
-        newWorker.addEventListener("statechange", async () => {
-          if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
-            // 有新版完成安裝
-            await swSkipWaiting(reg);
+        const sw = reg.installing;
+        if (!sw) return;
+        sw.addEventListener("statechange", () => {
+          if (sw.state === "installed" && navigator.serviceWorker.controller) {
+            sw.postMessage({ type: "SKIP_WAITING" });
           }
         });
       });
 
-      // controller change -> reload
       navigator.serviceWorker.addEventListener("controllerchange", () => {
-        // 用 location.reload() 會受 cache 影響，改用 cache-bust
-        const u = new URL(location.href);
-        u.searchParams.set("_v", String(Date.now()));
-        location.replace(u.toString());
+        // 新 SW 接管後重載
+        window.location.reload();
       });
-    } catch (e) {
-      console.warn("SW register failed:", e);
+
+      // 進站時自動檢查一次（不會太頻繁）
+      setTimeout(() => swCheckAndUpdate(), 1200);
+    } catch {
+      // ignore
     }
   }
 
-  function swPost(msg) {
-    if (!navigator.serviceWorker.controller) return;
-    navigator.serviceWorker.controller.postMessage(msg);
-  }
-
-  async function swSkipWaiting(reg) {
+  async function swCheckAndUpdate() {
+    if (!("serviceWorker" in navigator)) return false;
     try {
-      reg.waiting?.postMessage({ type: "SKIP_WAITING" });
+      const reg = await navigator.serviceWorker.getRegistration("./");
+      if (!reg) return false;
+
+      // 強制抓最新 sw.js（避免 cache）
+      await fetch("./sw.js", { cache: "no-store" });
+
+      await reg.update();
+      if (reg.waiting) reg.waiting.postMessage({ type: "SKIP_WAITING" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function hardReload() {
+    // 清 caches + unregister SW
+    try {
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
     } catch {}
-  }
 
-  async function forceRefreshHard() {
-    // 1) 請 SW 清快取
-    swPost({ type: "CLEAR_CACHES" });
-    // 2) 清掉瀏覽器 HTTP cache 的影響：加 query 重新載入
+    try {
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+    } catch {}
+
+    // 重新載入（加 cache bust）
     const u = new URL(location.href);
-    u.searchParams.set("_hard", String(Date.now()));
-    location.replace(u.toString());
+    u.searchParams.set("_", String(Date.now()));
+    location.href = u.toString();
   }
 
-  // ====== AI CALL ======
-  async function aiAnalyze({ imageDataUrl, text }) {
-    // imageDataUrl: data:image/...;base64,...
-    // text: optional description
-    const payload = {
-      image: imageDataUrl || null,
-      text: text || ""
-    };
-
-    const res = await fetch(AI_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-
-    if (!res.ok) {
-      const msg = await res.text().catch(() => "");
-      throw new Error(`AI 服務錯誤: ${res.status} ${msg}`.slice(0, 300));
-    }
-    return await res.json();
+  // ====== Utils ======
+  function cryptoId() {
+    // Safari 也可用
+    if (crypto && crypto.randomUUID) return crypto.randomUUID();
+    return "id_" + Math.random().toString(16).slice(2) + Date.now().toString(16);
   }
 
-  // ====== UI RENDER ======
-  function render() {
-    const root = document.getElementById("app") || document.body;
-
-    // 一次性建立 layout（避免 UI 被舊 DOM / overlay 卡住）
-    root.innerHTML = `
-      <div class="app" id="appShell">
-        ${renderHeader()}
-        ${renderChips()}
-        ${renderMain()}
-      </div>
-      ${renderFab()}
-      ${renderBottomNav()}
-      ${renderOverlays()}
-    `;
-
-    bindEvents();
+  function parseNumOrNull(v) {
+    const n = Number(String(v).trim());
+    return Number.isFinite(n) ? n : null;
   }
 
-  function renderHeader() {
-    return `
-      <div class="header">
-        <div class="brand">MY WARDROBE</div>
-        <h1>我的衣櫃日記</h1>
-        <div class="sub">今天收集了 <b>${todayCount()}</b> 件寶貝 <span style="opacity:.55;">v${escapeHtml(APP_VERSION)}</span></div>
-      </div>
-    `;
+  function isNum(v) {
+    return typeof v === "number" && Number.isFinite(v);
   }
 
-  function renderChips() {
-    if (state.tab !== "衣櫃") return "";
-    const chips = CATS.map(cat => {
-      const on = cat === state.cat ? "on" : "";
-      return `<button class="chip ${on}" data-act="setCat" data-cat="${escapeHtml(cat)}">${escapeHtml(cat)}</button>`;
-    }).join("");
-    return `<div class="chips" aria-label="category chips">${chips}</div>`;
+  function joinUrl(base, path) {
+    const b = (base || "").replace(/\/+$/, "");
+    const p = (path || "").startsWith("/") ? path : "/" + path;
+    return b + p;
   }
 
-  function renderMain() {
-    if (state.tab !== "衣櫃") {
-      // 先做簡單 placeholder（保留你底部四分頁 UI）
-      const hint = state.tab === "自選"
-        ? "這裡可以做「今日穿搭組合」或「一鍵推薦」功能（之後加）。"
-        : state.tab === "靈感"
-          ? "這裡可以做「穿搭靈感收藏」或「顏色/風格分類」功能（之後加）。"
-          : "這裡可以做「匯出/匯入、強制更新、AI 設定」等功能（已預留按鈕）。";
-      return `
-        <div class="empty">
-          <div style="font-weight:900; color:#333; margin-bottom:8px;">${escapeHtml(state.tab)}</div>
-          <div>${escapeHtml(hint)}</div>
-          ${state.tab === "個人" ? `
-            <div style="margin-top:12px; display:grid; gap:10px;">
-              <button class="btnPrimary" data-act="forceRefresh">強制更新（清快取）</button>
-              <button class="btnDanger" data-act="wipeAll">清空所有資料（localStorage）</button>
-            </div>
-          ` : ""}
-        </div>
-      `;
-    }
-
-    const list = filteredItems();
-    if (list.length === 0) {
-      return `<div class="empty">尚無衣物，點右下角 + 新增</div>`;
-    }
-
-    return `
-      <div class="grid">
-        ${list.map(renderCard).join("")}
-      </div>
-    `;
-  }
-
-  function renderCard(it) {
-    const img = it.imageDataUrl
-      ? `<img src="${escapeHtml(it.imageDataUrl)}" alt="${escapeHtml(it.title)}">`
-      : `<img alt="" src="" style="background:#f2f2f2;">`;
-
-    const tag = `${escapeHtml(it.cat || "")}${fmtTempRange(it.tMin, it.tMax) ? ` · ${escapeHtml(fmtTempRange(it.tMin, it.tMax))}` : ""}`;
-
-    // 顏色 / 材質（如果有）
-    const cm = [
-      it.color ? `顏色：${escapeHtml(it.color)}` : "",
-      it.material ? `材質：${escapeHtml(it.material)}` : ""
-    ].filter(Boolean).join(" · ");
-
-    return `
-      <button class="card" data-act="edit" data-id="${escapeHtml(it.id)}">
-        ${img}
-        <div class="cardTitle">${escapeHtml(it.title || "（未命名）")}</div>
-        <div class="tag">${escapeHtml(tag || "未分類")}</div>
-        ${cm ? `<div class="tag" style="margin-top:-6px;">${cm}</div>` : ""}
-      </button>
-    `;
-  }
-
-  function renderFab() {
-    // FAB 只在「衣櫃」顯示（避免其他 tab 被遮）
-    if (state.tab !== "衣櫃") return "";
-    return `
-      <button class="fab" data-act="toggleMenu" aria-label="add">+</button>
-      ${state.menuOpen ? `
-        <div class="menu" id="fabMenu">
-          <button data-act="addPhoto">📷 照片圖庫</button>
-          <button data-act="addCamera">📸 拍照</button>
-          <button data-act="quickAdd">⚡ 快速加入基礎單品</button>
-          <button class="danger" data-act="forceRefresh">強制更新（清快取）</button>
-        </div>
-      ` : ""}
-      <input id="filePicker" type="file" accept="image/*" style="display:none" />
-      <input id="cameraPicker" type="file" accept="image/*" capture="environment" style="display:none" />
-    `;
-  }
-
-  function renderBottomNav() {
-    const tabs = ["衣櫃", "自選", "靈感", "個人"];
-    return `
-      <div class="bottomNav" role="navigation" aria-label="bottom nav">
-        ${tabs.map(t => `
-          <button class="${t === state.tab ? "on" : ""}" data-act="setTab" data-tab="${escapeHtml(t)}">${escapeHtml(t)}</button>
-        `).join("")}
-      </div>
-    `;
-  }
-
-  function renderOverlays() {
-    // overlay / modal：永遠用「有就 render，沒有就不 render」避免 invisible div 擋住操作
-    if (!state.modal) return "";
-
-    if (state.modal.type === "quick") {
-      return `
-        <div class="modal" data-act="closeModal">
-          <div class="modalCard" role="dialog" aria-modal="true" onclick="event.stopPropagation()">
-            <div class="modalHead">
-              <div class="modalTitle">⚡ 快速加入基礎單品</div>
-              <button class="iconBtn" data-act="closeModal">×</button>
-            </div>
-            <div class="empty" style="margin-top:0;">
-              選擇
-            </div>
-            <div class="chips" style="padding-top:10px;">
-              ${QUICK_ITEMS.map((q, idx) =>
-                `<button class="chip" data-act="quickPick" data-idx="${idx}">${escapeHtml(q.title)}</button>`
-              ).join("")}
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
-    if (state.modal.type === "edit") {
-      const it = state.modal.item;
-      const img = it.imageDataUrl
-        ? `<img src="${escapeHtml(it.imageDataUrl)}" alt="" style="width:100%; height:180px; object-fit:cover; border-radius:18px; border:1px solid #eee;" />`
-        : `<div style="height:140px; border-radius:18px; background:#f3f3f3; display:flex; align-items:center; justify-content:center; color:#888; font-weight:800;">無照片</div>`;
-
-      return `
-        <div class="modal" data-act="closeModal">
-          <div class="modalCard" role="dialog" aria-modal="true" onclick="event.stopPropagation()">
-            <div class="modalHead">
-              <div class="modalTitle">編輯單品</div>
-              <button class="iconBtn" data-act="closeModal">×</button>
-            </div>
-
-            ${img}
-
-            <div class="field">
-              <div class="label">名稱 / 描述</div>
-              <input class="input" id="f_title" placeholder="例如：深灰色立領羽絨外套，輕巧保暖" value="${escapeHtml(it.title || "")}">
-            </div>
-
-            <div class="field">
-              <div class="label">適穿溫度範圍（°C）</div>
-              <div class="row2">
-                <input class="input" id="f_tmin" inputmode="numeric" value="${escapeHtml(it.tMin ?? 0)}">
-                <div class="dash">-</div>
-                <input class="input" id="f_tmax" inputmode="numeric" value="${escapeHtml(it.tMax ?? 0)}">
-              </div>
-            </div>
-
-            <div class="field">
-              <div class="label">版型（FIT） / 長度（LENGTH）</div>
-              <div class="row2" style="grid-template-columns:1fr 10px 1fr;">
-                <select class="input" id="f_fit">
-                  ${FIT_OPTS.map(v => `<option value="${escapeHtml(v)}" ${v === (it.fit || "") ? "selected" : ""}>${escapeHtml(v || "（未設定）")}</option>`).join("")}
-                </select>
-                <div></div>
-                <select class="input" id="f_len">
-                  ${LEN_OPTS.map(v => `<option value="${escapeHtml(v)}" ${v === (it.length || "") ? "selected" : ""}>${escapeHtml(v || "（未設定）")}</option>`).join("")}
-                </select>
-              </div>
-            </div>
-
-            <div class="field">
-              <div class="label">AI 判斷（顏色 / 材質）</div>
-              <div class="row2" style="grid-template-columns:1fr 10px 1fr;">
-                <input class="input" id="f_color" placeholder="顏色（可手改）" value="${escapeHtml(it.color || "")}">
-                <div></div>
-                <input class="input" id="f_mat" placeholder="材質（可手改）" value="${escapeHtml(it.material || "")}">
-              </div>
-              <div style="display:grid; grid-template-columns:1fr; gap:10px; margin-top:10px;">
-                <button class="btnPrimary" data-act="aiAnalyze">用 AI 自動判斷顏色/材質</button>
-              </div>
-              <div id="aiStatus" style="margin-top:8px; color:#777; font-weight:700;"></div>
-            </div>
-
-            <div class="field">
-              <div class="label">修改分類</div>
-              <div class="catGrid">
-                ${CATS.filter(c => c !== "全部").map(c => `
-                  <button class="catBtn ${c === it.cat ? "on" : ""}" data-act="pickCat" data-cat="${escapeHtml(c)}">${escapeHtml(c)}</button>
-                `).join("")}
-              </div>
-            </div>
-
-            <button class="btnPrimary" data-act="saveItem">儲存修改</button>
-            <button class="btnDanger" data-act="deleteItem">刪除此單品</button>
-
-            <button class="chip" style="width:100%; margin-top:12px;" data-act="closeModal">取消</button>
-          </div>
-        </div>
-      `;
-    }
-
-    return "";
-  }
-
-  // ====== EVENT BINDING ======
-  function bindEvents() {
-    document.body.onclick = async (e) => {
-      const btn = e.target.closest("[data-act]");
-      if (!btn) {
-        // 點空白：如果 menu 開著就關掉
-        if (state.menuOpen) {
-          state.menuOpen = false;
-          render();
-        }
-        return;
-      }
-
-      const act = btn.dataset.act;
-
-      try {
-        if (act === "setTab") {
-          state.tab = btn.dataset.tab;
-          state.menuOpen = false;
-          saveUI({ ...loadUI(), tab: state.tab, cat: state.cat });
-          render();
-          return;
-        }
-
-        if (act === "setCat") {
-          state.cat = btn.dataset.cat;
-          saveUI({ ...loadUI(), tab: state.tab, cat: state.cat });
-          render();
-          return;
-        }
-
-        if (act === "toggleMenu") {
-          state.menuOpen = !state.menuOpen;
-          render();
-          return;
-        }
-
-        if (act === "addPhoto") {
-          state.menuOpen = false;
-          render();
-          $("#filePicker")?.click();
-          return;
-        }
-
-        if (act === "addCamera") {
-          state.menuOpen = false;
-          render();
-          $("#cameraPicker")?.click();
-          return;
-        }
-
-        if (act === "quickAdd") {
-          state.menuOpen = false;
-          state.modal = { type: "quick" };
-          render();
-          return;
-        }
-
-        if (act === "quickPick") {
-          const idx = Number(btn.dataset.idx);
-          const q = QUICK_ITEMS[idx];
-          if (!q) return;
-
-          const now = Date.now();
-          const item = {
-            id: uid(),
-            title: q.title,
-            cat: q.cat,
-            tMin: q.tMin ?? 0,
-            tMax: q.tMax ?? 0,
-            fit: "",
-            length: "",
-            color: "",
-            material: "",
-            imageDataUrl: "",
-            createdAt: now,
-            updatedAt: now
-          };
-
-          state.items.unshift(item);
-          saveItems(state.items);
-          state.modal = null;
-          render();
-          return;
-        }
-
-        if (act === "edit") {
-          const id = btn.dataset.id;
-          const it = state.items.find(x => x.id === id);
-          if (!it) return;
-          state.modal = { type: "edit", item: { ...it }, catPick: it.cat };
-          state.menuOpen = false;
-          render();
-          return;
-        }
-
-        if (act === "closeModal") {
-          state.modal = null;
-          render();
-          return;
-        }
-
-        if (act === "pickCat") {
-          const cat = btn.dataset.cat;
-          if (!state.modal || state.modal.type !== "edit") return;
-          state.modal.item.cat = cat;
-          render(); // 重新 render 讓按鈕 on 更新
-          return;
-        }
-
-        if (act === "saveItem") {
-          if (!state.modal || state.modal.type !== "edit") return;
-
-          const it = state.modal.item;
-          it.title = $("#f_title")?.value?.trim() || "";
-          it.tMin = clampNum($("#f_tmin")?.value, 0);
-          it.tMax = clampNum($("#f_tmax")?.value, 0);
-          it.fit = $("#f_fit")?.value || "";
-          it.length = $("#f_len")?.value || "";
-          it.color = $("#f_color")?.value?.trim() || "";
-          it.material = $("#f_mat")?.value?.trim() || "";
-          it.updatedAt = Date.now();
-
-          const idx = state.items.findIndex(x => x.id === it.id);
-          if (idx >= 0) state.items[idx] = it;
-          else state.items.unshift(it);
-
-          saveItems(state.items);
-          state.modal = null;
-          render();
-          return;
-        }
-
-        if (act === "deleteItem") {
-          if (!state.modal || state.modal.type !== "edit") return;
-          const id = state.modal.item.id;
-          state.items = state.items.filter(x => x.id !== id);
-          saveItems(state.items);
-          state.modal = null;
-          render();
-          return;
-        }
-
-        if (act === "aiAnalyze") {
-          if (!state.modal || state.modal.type !== "edit") return;
-          const it = state.modal.item;
-
-          const status = $("#aiStatus");
-          if (status) status.textContent = "AI 分析中…";
-
-          // 送：照片 + 文字（title）
-          const result = await aiAnalyze({
-            imageDataUrl: it.imageDataUrl || null,
-            text: ($("#f_title")?.value || it.title || "").trim()
-          });
-
-          // 期望 result: { color, material, confidence, notes }
-          const color = (result?.color || "").trim();
-          const material = (result?.material || "").trim();
-
-          if (color) $("#f_color").value = color;
-          if (material) $("#f_mat").value = material;
-
-          if (status) {
-            const conf = result?.confidence != null ? `信心值：${result.confidence}` : "";
-            const notes = result?.notes ? `（${result.notes}）` : "";
-            status.textContent = ["完成", conf, notes].filter(Boolean).join(" ");
-          }
-          return;
-        }
-
-        if (act === "forceRefresh") {
-          await forceRefreshHard();
-          return;
-        }
-
-        if (act === "wipeAll") {
-          // 清空 localStorage（保險：只清自己 key）
-          localStorage.removeItem(LS_KEY_ITEMS);
-          localStorage.removeItem(LS_KEY_UI);
-          state.items = [];
-          state.cat = "全部";
-          state.tab = "衣櫃";
-          state.modal = null;
-          state.menuOpen = false;
-          render();
-          return;
-        }
-      } catch (err) {
-        console.error(err);
-        alert(String(err?.message || err));
-      }
-    };
-
-    // file pickers
-    const filePicker = $("#filePicker");
-    if (filePicker && !filePicker._bound) {
-      filePicker._bound = true;
-      filePicker.addEventListener("change", async (e) => {
-        const f = e.target.files?.[0];
-        e.target.value = "";
-        if (!f) return;
-        const dataUrl = await fileToDataUrl(f);
-
-        const now = Date.now();
-        const item = {
-          id: uid(),
-          title: "",
-          cat: "上衣",
-          tMin: 0,
-          tMax: 0,
-          fit: "",
-          length: "",
-          color: "",
-          material: "",
-          imageDataUrl: dataUrl,
-          createdAt: now,
-          updatedAt: now
-        };
-        state.items.unshift(item);
-        saveItems(state.items);
-        // 直接開編輯 modal
-        state.modal = { type: "edit", item: { ...item } };
-        render();
-      });
-    }
-
-    const cameraPicker = $("#cameraPicker");
-    if (cameraPicker && !cameraPicker._bound) {
-      cameraPicker._bound = true;
-      cameraPicker.addEventListener("change", async (e) => {
-        const f = e.target.files?.[0];
-        e.target.value = "";
-        if (!f) return;
-        const dataUrl = await fileToDataUrl(f);
-
-        const now = Date.now();
-        const item = {
-          id: uid(),
-          title: "",
-          cat: "上衣",
-          tMin: 0,
-          tMax: 0,
-          fit: "",
-          length: "",
-          color: "",
-          material: "",
-          imageDataUrl: dataUrl,
-          createdAt: now,
-          updatedAt: now
-        };
-        state.items.unshift(item);
-        saveItems(state.items);
-        state.modal = { type: "edit", item: { ...item } };
-        render();
-      });
+  async function safeText(res) {
+    try {
+      return await res.text();
+    } catch {
+      return "";
     }
   }
-
-  function fileToDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(String(r.result || ""));
-      r.onerror = reject;
-      r.readAsDataURL(file);
-    });
-  }
-
-  // ====== INIT ======
-  function init() {
-    state.items = loadItems();
-
-    const ui = loadUI();
-    if (ui.tab && ["衣櫃", "自選", "靈感", "個人"].includes(ui.tab)) state.tab = ui.tab;
-    if (ui.cat && CATS.includes(ui.cat)) state.cat = ui.cat;
-
-    // SW
-    swRegister();
-
-    render();
-  }
-
-  init();
 })();
