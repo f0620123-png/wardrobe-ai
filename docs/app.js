@@ -1,642 +1,332 @@
-// ========= Utilities =========
-const $ = (id) => document.getElementById(id);
-const uid = () => crypto.randomUUID();
-
-const CATS = [
-  "全部","上衣","下著","內搭","外套","鞋子","配件","連身","背心","襪子"
-];
-
-const QUICK_PRESETS = [
-  { name:"長袖打底（白）", cat:"內搭", dot:"#f5f5f5" },
-  { name:"長袖打底（黑）", cat:"內搭", dot:"#222222" },
-  { name:"短袖T恤（白）", cat:"上衣", dot:"#f5f5f5" },
-  { name:"短袖T恤（黑）", cat:"上衣", dot:"#222222" },
-  { name:"連帽外套（灰）", cat:"外套", dot:"#9aa0a6" },
-  { name:"牛仔外套", cat:"外套", dot:"#6aa6ff" },
-  { name:"牛仔寬褲", cat:"下著", dot:"#8bbcff" },
-  { name:"直筒牛仔褲", cat:"下著", dot:"#3f7cff" },
-];
-
-// ========= IndexedDB =========
-const DB_NAME = "wardrobe_ai_db";
-const DB_VER = 1;
-const STORE = "items";
-
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VER);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: "id" });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbAll() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readonly");
-    const st = tx.objectStore(STORE);
-    const req = st.getAll();
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbPut(item) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(item);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function dbDel(id) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-// ========= State =========
-const state = {
-  tab: "wardrobe",
-  filterCat: "全部",
-  items: [],
-  urlCache: new Map(), // id -> objectURL
-  editingId: null,
-  editingCat: "上衣",
-  pendingImageBlob: null,
-
-  mix: {
-    pickingCat: null,
-    picks: {
-      內搭: null,
-      上衣: null,
-      下著: null,
-      外套: null,
-      背心: null,
-      鞋子: null,
-      襪子: null,
-      配件: null,
-    }
-  }
-};
-
-// ========= Overlay Manager (核心：避免三層疊開卡頓) =========
-function setOverlay(on) {
-  document.documentElement.classList.toggle("noScroll", on);
-  document.body.classList.toggle("noScroll", on);
-}
-
-// 一律先關所有 overlay，再開新的（保證只會有一層）
-function closeAllOverlays() {
-  $("addMenu").hidden = true;
-  $("editModal").hidden = true;
-  $("quickModal").hidden = true;
-  $("pickMask").hidden = true;
-  $("pickSheet").hidden = true;
-
-  state.editingId = null;
-  state.mix.pickingCat = null;
-
-  setOverlay(false);
-}
-
-// ========= Image URL helper =========
-function getItemURL(item) {
-  if (!item?.imageBlob) return null;
-  if (state.urlCache.has(item.id)) return state.urlCache.get(item.id);
-  const url = URL.createObjectURL(item.imageBlob);
-  state.urlCache.set(item.id, url);
-  return url;
-}
-
-function revokeItemURL(id) {
-  const url = state.urlCache.get(id);
-  if (url) URL.revokeObjectURL(url);
-  state.urlCache.delete(id);
-}
-
-window.addEventListener("beforeunload", () => {
-  for (const url of state.urlCache.values()) URL.revokeObjectURL(url);
-  state.urlCache.clear();
-});
-
-// ========= Render =========
-function render() {
-  const app = $("app");
-  app.innerHTML = "";
-
-  if (state.tab === "wardrobe") renderWardrobe(app);
-  if (state.tab === "mix") renderMix(app);
-  if (state.tab === "inspo") renderInspo(app);
-  if (state.tab === "me") renderMe(app);
-
-  syncBottomNav();
-}
-
-function headerBlock(title, sub) {
-  const wrap = document.createElement("div");
-  wrap.className = "header";
-  wrap.innerHTML = `
-    <div class="brand">MY WARDROBE</div>
-    <h1>${title}</h1>
-    <div class="sub">${sub}</div>
-  `;
-  return wrap;
-}
-
-function renderWardrobe(app) {
-  const cnt = state.items.length;
-  app.appendChild(headerBlock("我的衣櫃日記", `今天收集了 ${cnt} 件寶貝`));
-
-  // chips
-  const chips = document.createElement("div");
-  chips.className = "chips";
-  for (const c of ["全部","上衣","下著","內搭","外套","鞋子","配件"]) {
-    const b = document.createElement("button");
-    b.className = "chip" + (state.filterCat === c ? " on" : "");
-    b.textContent = c;
-    b.addEventListener("click", () => {
-      state.filterCat = c;
-      render();
-    });
-    chips.appendChild(b);
-  }
-  app.appendChild(chips);
-
-  const filtered = state.filterCat === "全部"
-    ? state.items
-    : state.items.filter(it => it.category === state.filterCat);
-
-  if (filtered.length === 0) {
-    const e = document.createElement("div");
-    e.className = "empty";
-    e.textContent = "尚無衣物，點右下角 + 新增";
-    app.appendChild(e);
-    return;
-  }
-
-  const grid = document.createElement("div");
-  grid.className = "grid";
-
-  for (const it of filtered.slice().sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0))) {
-    const card = document.createElement("button");
-    card.className = "card";
-    card.type = "button";
-
-    const url = getItemURL(it);
-    const img = url ? `<img src="${url}" alt="">` : `<img alt="">`;
-
-    const tempTxt = (it.tempMin != null && it.tempMax != null)
-      ? `${it.tempMin}–${it.tempMax}°C`
-      : "未設定溫度";
-
-    card.innerHTML = `
-      ${img}
-      <div class="cardTitle">${escapeHtml(it.title || "(未命名)")}</div>
-      <div class="tag">上衣架 · ${it.category} · ${tempTxt}</div>
-    `;
-    card.addEventListener("click", () => openEdit(it.id));
-    grid.appendChild(card);
-  }
-
-  app.appendChild(grid);
-}
-
-function renderMix(app) {
-  app.appendChild(headerBlock("自選穿搭", "點選格子，從衣櫃挑選單品"));
-
-  const title = document.createElement("div");
-  title.className = "mixTitle";
-  title.innerHTML = `<h2>Mix & Match</h2>`;
-  app.appendChild(title);
-
-  const grid = document.createElement("div");
-  grid.className = "mixGrid";
-
-  const slots = [
-    { cat:"內搭", cls:"slotSmall" },
-    { cat:"上衣", cls:"slotSmall" },
-    { cat:"下著", cls:"slotSmall" },
-    { cat:"外套", cls:"slotSmall" },
-    { cat:"背心", cls:"slotSmall" },
-    { cat:"鞋子", cls:"slotSmall" },
-    { cat:"襪子", cls:"slotSmall" },
-    { cat:"配件", cls:"slotWide" },
+/* docs/app.js */
+(() => {
+  const CATS = ["全部", "上衣", "下著", "內搭", "外套", "鞋子", "配件"];
+  const QUICK = [
+    { title: "長袖打底（白）", category: "內搭", tMin: 10, tMax: 22 },
+    { title: "長袖打底（黑）", category: "內搭", tMin: 10, tMax: 22 },
+    { title: "短袖T恤（白）", category: "內搭", tMin: 20, tMax: 35 },
+    { title: "短袖T恤（黑）", category: "內搭", tMin: 20, tMax: 35 },
+    { title: "連帽外套（灰）", category: "外套", tMin: 8, tMax: 20 },
+    { title: "牛仔外套", category: "外套", tMin: 10, tMax: 22 },
+    { title: "牛仔寬褲", category: "下著", tMin: 8, tMax: 35 },
+    { title: "直筒牛仔褲", category: "下著", tMin: 8, tMax: 35 }
   ];
 
-  for (const s of slots) {
-    const chosenId = state.mix.picks[s.cat];
-    const chosen = chosenId ? state.items.find(x => x.id === chosenId) : null;
+  const $ = (sel) => document.querySelector(sel);
 
-    const btn = document.createElement("button");
-    btn.className = "slot " + (s.cls || "") + (chosen ? " on" : "");
-    btn.type = "button";
+  const el = {
+    sub: $("#subline"),
+    chips: $("#chips"),
+    grid: $("#grid"),
+    empty: $("#empty"),
+    fab: $("#fab"),
+    menu: $("#menu"),
+    modalRoot: $("#modalRoot"),
+    filePick: $("#filePick"),
+    fileCamera: $("#fileCamera"),
+    btnPick: $("#btnPick"),
+    btnCamera: $("#btnCamera"),
+    btnFile: $("#btnFile"),
+    btnQuick: $("#btnQuick"),
+    bottomNav: $("#bottomNav")
+  };
 
-    if (!chosen) {
-      btn.innerHTML = `<span>${s.cat}</span>`;
-    } else {
-      btn.innerHTML = `
-        <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
-          <span class="slotBadge">${s.cat}</span>
-          <div style="font-weight:900; color:#111;">${escapeHtml(chosen.title || "(未命名)")}</div>
-        </div>
+  let tab = "wardrobe";
+  let filterCat = "全部";
+
+  // ---- 防止「看起來正常但完全不能操作」：如果 JS 有跑，這裡一定會印
+  console.log("[Wardrobe] app.js loaded");
+
+  function renderChips() {
+    el.chips.innerHTML = "";
+    CATS.forEach(cat => {
+      const b = document.createElement("button");
+      b.className = "chip" + (filterCat === cat ? " on" : "");
+      b.textContent = cat;
+      b.addEventListener("click", () => {
+        filterCat = cat;
+        render();
+      });
+      el.chips.appendChild(b);
+    });
+  }
+
+  function renderGrid(items) {
+    if (!items.length) {
+      el.grid.style.display = "none";
+      el.empty.style.display = "block";
+      el.sub.textContent = `今天收集了 0 件寶貝`;
+      return;
+    }
+    el.empty.style.display = "none";
+    el.grid.style.display = "grid";
+    el.sub.textContent = `今天收集了 ${items.length} 件寶貝`;
+
+    el.grid.innerHTML = items.map(item => {
+      const img = item.imageDataUrl ? item.imageDataUrl : "";
+      const safeTitle = escapeHtml(item.title || "(未命名)");
+      return `
+        <button class="card" data-id="${item.id}">
+          <img alt="" src="${img}" />
+          <div class="cardTitle">${safeTitle}</div>
+          <div class="tag">${item.category}・${item.tMin}–${item.tMax}°C</div>
+        </button>
       `;
+    }).join("");
+
+    // 卡片點擊
+    el.grid.querySelectorAll(".card").forEach(card => {
+      card.addEventListener("click", () => {
+        const id = card.getAttribute("data-id");
+        openEditModal(DB.get(id));
+      });
+    });
+  }
+
+  function render() {
+    // tabs：目前只把衣櫃做完整，其餘顯示佔位
+    Array.from(el.bottomNav.querySelectorAll("button")).forEach(b => {
+      b.classList.toggle("on", b.dataset.tab === tab);
+    });
+
+    if (tab !== "wardrobe") {
+      el.chips.style.display = "none";
+      el.grid.style.display = "none";
+      el.empty.style.display = "block";
+      el.empty.textContent = "此頁面先保留，你要我做哪個功能我再補上。";
+      return;
     }
 
-    btn.addEventListener("click", () => openPickSheet(s.cat));
-    grid.appendChild(btn);
+    el.chips.style.display = "flex";
+    renderChips();
+
+    let items = DB.list();
+    if (filterCat !== "全部") items = items.filter(x => x.category === filterCat);
+    renderGrid(items);
   }
 
-  app.appendChild(grid);
+  // ---- Menu
+  function toggleMenu(force) {
+    const show = (typeof force === "boolean") ? force : (el.menu.style.display === "none");
+    el.menu.style.display = show ? "block" : "none";
+  }
 
-  const cta = document.createElement("button");
-  cta.className = "btnPrimary";
-  cta.textContent = "✨ 虛擬試穿（示意）";
-  cta.addEventListener("click", () => {
-    closeAllOverlays();
-    alert("目前此純 GitHub Pages 版本先提供衣櫃＋自選搭配。\n\n若要做 AI 全身虛擬試穿，需要後端代理（或使用者自行輸入 API Key）。");
+  el.fab.addEventListener("click", () => toggleMenu());
+
+  // 點畫面其他地方關掉 menu
+  document.addEventListener("click", (e) => {
+    const inside = el.menu.contains(e.target) || el.fab.contains(e.target);
+    if (!inside) toggleMenu(false);
   });
-  app.appendChild(cta);
-}
 
-function renderInspo(app) {
-  app.appendChild(headerBlock("穿搭靈感", "此頁先保留為擴充（天氣推薦/AI 示意圖）"));
-  const box = document.createElement("div");
-  box.className = "empty";
-  box.textContent = "先把衣櫃與自選流程穩住，再接天氣推薦與 AI 生成。";
-  app.appendChild(box);
-}
-
-function renderMe(app) {
-  app.appendChild(headerBlock("個人", "本機資料（IndexedDB）儲存在你的裝置"));
-  const box = document.createElement("div");
-  box.className = "empty";
-  box.innerHTML = `
-    <div style="font-weight:900; color:#444; margin-bottom:8px;">小提醒</div>
-    <div style="line-height:1.6; text-align:left;">
-      1) 若你之前啟用過 Service Worker（sw.js），請刪一次網站資料。<br/>
-      2) 本專案目前為純前端，AI 生成/試穿需後端或本機輸入 Key（不建議公開）。<br/>
-      3) 卡頓主要已由「禁止 overlay 疊開」處理。
-    </div>
-  `;
-  app.appendChild(box);
-
-  const clearBtn = document.createElement("button");
-  clearBtn.className = "btnDanger";
-  clearBtn.textContent = "清空所有衣櫃資料（本機）";
-  clearBtn.addEventListener("click", async () => {
-    const ok = confirm("確定清空所有衣物？此動作不可復原。");
-    if (!ok) return;
-    // delete all
-    for (const it of state.items) revokeItemURL(it.id);
-    const db = await openDB();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).clear();
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+  // ---- Image handling (壓縮避免 localStorage 爆掉/卡頓)
+  async function fileToDataUrl(file) {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = reject;
+      fr.readAsDataURL(file);
     });
-    state.items = [];
-    render();
+
+    // 壓縮
+    const img = await loadImage(dataUrl);
+    const max = 1024;
+    const ratio = Math.min(1, max / Math.max(img.width, img.height));
+    const w = Math.round(img.width * ratio);
+    const h = Math.round(img.height * ratio);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas.toDataURL("image/jpeg", 0.82);
+  }
+
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  // ---- Add flows
+  el.btnPick.addEventListener("click", () => {
+    toggleMenu(false);
+    el.filePick.click();
   });
-  app.appendChild(clearBtn);
-}
 
-function syncBottomNav() {
-  const map = {
-    wardrobe: $("tabWardrobe"),
-    mix: $("tabMix"),
-    inspo: $("tabInspo"),
-    me: $("tabMe")
-  };
-  for (const [k, btn] of Object.entries(map)) {
-    btn.classList.toggle("on", state.tab === k);
-  }
-}
-
-// ========= Actions: Add / Edit =========
-function openAddMenu() {
-  closeAllOverlays();
-  $("addMenu").hidden = false;
-  setOverlay(true);
-}
-
-function closeAddMenu() {
-  $("addMenu").hidden = true;
-  setOverlay(false);
-}
-
-function setCatButtons(current) {
-  const grid = $("catGrid");
-  grid.innerHTML = "";
-  for (const c of CATS.filter(x => x !== "全部")) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "catBtn" + (current === c ? " on" : "");
-    b.textContent = c;
-    b.addEventListener("click", () => {
-      state.editingCat = c;
-      setCatButtons(c);
-    });
-    grid.appendChild(b);
-  }
-}
-
-function openEdit(id) {
-  closeAllOverlays();
-
-  const it = state.items.find(x => x.id === id);
-  if (!it) return;
-
-  state.editingId = id;
-  state.editingCat = it.category || "上衣";
-  state.pendingImageBlob = it.imageBlob || null;
-
-  $("inTitle").value = it.title || "";
-  $("inMin").value = it.tempMin ?? "";
-  $("inMax").value = it.tempMax ?? "";
-  setCatButtons(state.editingCat);
-
-  $("editModal").hidden = false;
-  setOverlay(true);
-}
-
-function closeEdit() {
-  $("editModal").hidden = true;
-  state.editingId = null;
-  state.pendingImageBlob = null;
-  setOverlay(false);
-}
-
-async function saveEdit() {
-  const id = state.editingId;
-  if (!id) return;
-
-  const it = state.items.find(x => x.id === id);
-  if (!it) return;
-
-  it.title = ($("inTitle").value || "").trim();
-  it.category = state.editingCat;
-
-  const min = parseInt(($("inMin").value || "").trim(), 10);
-  const max = parseInt(($("inMax").value || "").trim(), 10);
-  it.tempMin = Number.isFinite(min) ? min : null;
-  it.tempMax = Number.isFinite(max) ? max : null;
-
-  if (state.pendingImageBlob) it.imageBlob = state.pendingImageBlob;
-
-  it.updatedAt = Date.now();
-
-  await dbPut(it);
-  await loadItems();
-
-  closeEdit();
-  render();
-}
-
-async function deleteEdit() {
-  const id = state.editingId;
-  if (!id) return;
-  const ok = confirm("確定刪除此單品？");
-  if (!ok) return;
-
-  await dbDel(id);
-  revokeItemURL(id);
-  await loadItems();
-
-  closeEdit();
-  render();
-}
-
-// ========= File add =========
-async function handlePickedFile(file) {
-  if (!file) return;
-
-  // 新增一筆 item，並直接進入編輯
-  const id = uid();
-  const item = {
-    id,
-    title: "",
-    category: "上衣",
-    tempMin: null,
-    tempMax: null,
-    imageBlob: file,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  };
-
-  await dbPut(item);
-  await loadItems();
-
-  closeAddMenu();
-  openEdit(id);
-  render();
-}
-
-// ========= Quick Add =========
-function openQuick() {
-  closeAllOverlays();
-  // build quick grid
-  const g = $("quickGrid");
-  g.innerHTML = "";
-  for (const p of QUICK_PRESETS) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "quickBtn";
-    b.innerHTML = `
-      <div class="quickDot" style="background:${p.dot}"></div>
-      <div>${escapeHtml(p.name)}</div>
-    `;
-    b.addEventListener("click", async () => {
-      const id = uid();
-      const item = {
-        id,
-        title: p.name,
-        category: p.cat,
-        tempMin: null,
-        tempMax: null,
-        imageBlob: null,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      await dbPut(item);
-      await loadItems();
-      $("quickModal").hidden = true;
-      setOverlay(false);
-      openEdit(id);
-      render();
-    });
-    g.appendChild(b);
-  }
-
-  $("quickModal").hidden = false;
-  setOverlay(true);
-}
-
-function closeQuick() {
-  $("quickModal").hidden = true;
-  setOverlay(false);
-}
-
-// ========= Pick Sheet =========
-function openPickSheet(cat) {
-  closeAllOverlays();
-
-  state.mix.pickingCat = cat;
-  $("pickTitle").textContent = `選擇${cat}`;
-  $("pickBody").innerHTML = "";
-
-  // allow "none"
-  const none = document.createElement("button");
-  none.type = "button";
-  none.className = "pickRow";
-  none.innerHTML = `
-    <div class="pickThumb"></div>
-    <div class="pickMeta">
-      <div class="pickName">不選擇此項</div>
-      <div class="pickSub">留空</div>
-    </div>
-  `;
-  none.addEventListener("click", () => {
-    state.mix.picks[cat] = null;
-    closePickSheet();
-    render();
+  el.btnCamera.addEventListener("click", () => {
+    toggleMenu(false);
+    el.fileCamera.click();
   });
-  $("pickBody").appendChild(none);
 
-  const list = state.items
-    .filter(it => it.category === cat)
-    .sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
+  el.btnFile.addEventListener("click", () => {
+    toggleMenu(false);
+    el.filePick.click();
+  });
 
-  for (const it of list) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "pickRow";
+  el.btnQuick.addEventListener("click", () => {
+    toggleMenu(false);
+    openQuickModal();
+  });
 
-    const url = getItemURL(it);
-    const thumb = url
-      ? `<img src="${url}" alt="">`
-      : "";
+  el.filePick.addEventListener("change", async () => {
+    const f = el.filePick.files && el.filePick.files[0];
+    el.filePick.value = "";
+    if (!f) return;
+    const dataUrl = await fileToDataUrl(f);
+    openEditModal(DB.newItem({ imageDataUrl: dataUrl }));
+  });
 
-    const tempTxt = (it.tempMin != null && it.tempMax != null)
-      ? `${it.tempMin}–${it.tempMax}°C`
-      : "未設定溫度";
+  el.fileCamera.addEventListener("change", async () => {
+    const f = el.fileCamera.files && el.fileCamera.files[0];
+    el.fileCamera.value = "";
+    if (!f) return;
+    const dataUrl = await fileToDataUrl(f);
+    openEditModal(DB.newItem({ imageDataUrl: dataUrl }));
+  });
 
-    row.innerHTML = `
-      <div class="pickThumb">${thumb}</div>
-      <div class="pickMeta">
-        <div class="pickName">${escapeHtml(it.title || "(未命名)")}</div>
-        <div class="pickSub">${it.category} · ${tempTxt}</div>
+  // ---- Modals
+  function closeModal() {
+    el.modalRoot.innerHTML = "";
+  }
+
+  function openEditModal(item) {
+    if (!item) item = DB.newItem();
+    el.modalRoot.innerHTML = `
+      <div class="modal">
+        <div class="modalCard">
+          <div class="modalHead">
+            <div class="modalTitle">編輯單品</div>
+            <button class="iconBtn" id="xClose">×</button>
+          </div>
+
+          <div class="field">
+            <div class="label">名稱 / 描述</div>
+            <input class="input" id="iTitle" placeholder="例如：深灰色立領羽絨外套，輕巧保暖" value="${escapeAttr(item.title || "")}">
+          </div>
+
+          <div class="field">
+            <div class="label">適穿溫度範圍（°C）</div>
+            <div class="row2">
+              <input class="input" id="iMin" type="number" value="${Number(item.tMin ?? 0)}">
+              <div class="dash">-</div>
+              <input class="input" id="iMax" type="number" value="${Number(item.tMax ?? 30)}">
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="label">修改分類</div>
+            <div class="catGrid" id="catGrid"></div>
+          </div>
+
+          <button class="btnPrimary" id="btnSave">儲存修改</button>
+          <button class="btnDanger" id="btnDel">刪除此單品</button>
+        </div>
       </div>
     `;
-    row.addEventListener("click", () => {
-      state.mix.picks[cat] = it.id;
-      closePickSheet();
+
+    $("#xClose").addEventListener("click", closeModal);
+
+    // cat buttons
+    const cg = $("#catGrid");
+    ["上衣","下著","內搭","外套","鞋子","配件"].forEach(cat => {
+      const b = document.createElement("button");
+      b.className = "catBtn" + (item.category === cat ? " on" : "");
+      b.textContent = cat;
+      b.addEventListener("click", () => {
+        item.category = cat;
+        Array.from(cg.querySelectorAll("button")).forEach(x => x.classList.remove("on"));
+        b.classList.add("on");
+      });
+      cg.appendChild(b);
+    });
+
+    $("#btnSave").addEventListener("click", () => {
+      item.title = $("#iTitle").value.trim();
+      item.tMin = Number($("#iMin").value || 0);
+      item.tMax = Number($("#iMax").value || 0);
+      DB.upsert(item);
+      closeModal();
       render();
     });
-    $("pickBody").appendChild(row);
+
+    $("#btnDel").addEventListener("click", () => {
+      DB.remove(item.id);
+      closeModal();
+      render();
+    });
+
+    // 點遮罩關閉（避免卡住不能點）
+    el.modalRoot.querySelector(".modal").addEventListener("click", (e) => {
+      if (e.target.classList.contains("modal")) closeModal();
+    });
   }
 
-  $("pickMask").hidden = false;
-  $("pickSheet").hidden = false;
-  setOverlay(true);
-}
+  function openQuickModal() {
+    el.modalRoot.innerHTML = `
+      <div class="modal">
+        <div class="modalCard">
+          <div class="modalHead">
+            <div class="modalTitle">⚡ 快速加入基礎單品</div>
+            <button class="iconBtn" id="xClose">×</button>
+          </div>
+          <div class="catGrid" id="qGrid"></div>
+        </div>
+      </div>
+    `;
 
-function closePickSheet() {
-  $("pickMask").hidden = true;
-  $("pickSheet").hidden = true;
-  state.mix.pickingCat = null;
-  setOverlay(false);
-}
+    $("#xClose").addEventListener("click", closeModal);
 
-// ========= Load =========
-async function loadItems() {
-  state.items = await dbAll();
-}
+    const q = $("#qGrid");
+    QUICK.forEach(p => {
+      const b = document.createElement("button");
+      b.className = "catBtn";
+      b.textContent = p.title;
+      b.addEventListener("click", () => {
+        DB.upsert(DB.newItem({
+          title: p.title,
+          category: p.category,
+          tMin: p.tMin,
+          tMax: p.tMax,
+          imageDataUrl: ""
+        }));
+        closeModal();
+        render();
+      });
+      q.appendChild(b);
+    });
 
-// ========= Events =========
-function bind() {
-  // tabs
-  $("tabWardrobe").addEventListener("click", () => { closeAllOverlays(); state.tab="wardrobe"; render(); });
-  $("tabMix").addEventListener("click", () => { closeAllOverlays(); state.tab="mix"; render(); });
-  $("tabInspo").addEventListener("click", () => { closeAllOverlays(); state.tab="inspo"; render(); });
-  $("tabMe").addEventListener("click", () => { closeAllOverlays(); state.tab="me"; render(); });
+    el.modalRoot.querySelector(".modal").addEventListener("click", (e) => {
+      if (e.target.classList.contains("modal")) closeModal();
+    });
+  }
 
-  // fab/menu
-  $("fabAdd").addEventListener("click", () => {
-    if (!$("addMenu").hidden) closeAddMenu();
-    else openAddMenu();
-  });
-  $("fabQuick").addEventListener("click", () => openQuick());
-
-  // menu actions -> file input
-  $("btnPickPhoto").addEventListener("click", () => { $("filePicker").click(); });
-  $("btnPickFile").addEventListener("click", () => { $("filePicker").click(); });
-  $("btnCamera").addEventListener("click", () => { $("cameraPicker").click(); });
-
-  $("filePicker").addEventListener("change", async (e) => {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    await handlePickedFile(f || null);
-  });
-  $("cameraPicker").addEventListener("change", async (e) => {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    await handlePickedFile(f || null);
-  });
-
-  // click outside menu closes it
-  document.addEventListener("click", (e) => {
-    const menu = $("addMenu");
-    const fab = $("fabAdd");
-    if (menu.hidden) return;
-    const inside = menu.contains(e.target) || fab.contains(e.target);
-    if (!inside) closeAddMenu();
+  // ---- Bottom nav
+  el.bottomNav.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    tab = b.dataset.tab;
+    render();
   });
 
-  // edit modal
-  $("btnCloseEdit").addEventListener("click", () => closeEdit());
-  $("btnSaveEdit").addEventListener("click", () => saveEdit());
-  $("btnDeleteEdit").addEventListener("click", () => deleteEdit());
+  // ---- Service Worker (避免卡頓/快取不更新)
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js?v=1").catch(console.error);
+  }
 
-  // quick modal
-  $("btnCloseQuick").addEventListener("click", () => closeQuick());
+  // helpers
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+    }[c]));
+  }
+  function escapeAttr(s) {
+    return String(s).replace(/"/g, "&quot;");
+  }
 
-  // sheet
-  $("btnClosePick").addEventListener("click", () => closePickSheet());
-  $("pickMask").addEventListener("click", () => closePickSheet());
-
-  // Esc
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeAllOverlays();
-  });
-}
-
-// ========= Security/HTML helper =========
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
-}
-
-// ========= Init =========
-(async function init(){
-  bind();
-  await loadItems();
+  // start
   render();
 })();
