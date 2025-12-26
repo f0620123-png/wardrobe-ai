@@ -6,9 +6,33 @@
   <meta name="theme-color" content="#fbf6ef" />
   <title>我的衣櫃日記</title>
 
-  <!-- Cache Bust: 每次你想強制驗收，把 v= 後面的數字 +1 -->
-  <link rel="stylesheet" href="./styles.css?v=1" />
+  <!-- 這段會自動判斷 GitHub Pages 的 base path：
+       1) https://xxx.github.io/  -> base = "/"
+       2) https://xxx.github.io/wardrobe-ai/ -> base = "/wardrobe-ai/"
+     並正確載入 styles.css / app.js
+  -->
+  <script>
+    (function () {
+      // pathname 例：
+      // "/" 或 "/index.html" 或 "/wardrobe-ai/" 或 "/wardrobe-ai/index.html"
+      const parts = location.pathname.split('/').filter(Boolean);
+
+      // 若是 project pages，通常第一段就是 repo 名稱
+      // 若是 root pages（user site），parts 可能為空或只有 index.html
+      const first = parts[0] || "";
+      const isFile = first.includes(".");
+      const base = (!first || isFile) ? "/" : ("/" + first + "/");
+
+      window.__BASE__ = base;
+
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = base + "styles.css?v=2";   // v=2：強制驗收（每次改 +1）
+      document.head.appendChild(link);
+    })();
+  </script>
 </head>
+
 <body>
   <main class="app" id="app"></main>
 
@@ -87,6 +111,10 @@
     <button id="tabMe">個人</button>
   </nav>
 
-  <script type="module" src="./app.js?v=1"></script>
+  <!-- 用動態 import，確保 app.js 也走同一個 base -->
+  <script type="module">
+    const base = window.__BASE__ || "/";
+    import(base + "app.js?v=2");  // v=2：強制驗收（每次改 +1）
+  </script>
 </body>
 </html>
