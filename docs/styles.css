@@ -1,92 +1,341 @@
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#fbf6ef" />
-  <title>我的衣櫃日記</title>
+:root{
+  --bg:#fbf6ef;
+  --card:#ffffff;
+  --ink:#2b2b2b;
+  --muted:#777;
+  --stroke:#e8e1d8;
+  --primary:#3d3d3d;
+  --radius:24px;
+}
 
-  <!-- Cache Bust: 每次你想強制驗收，把 v= 後面的數字 +1 -->
-  <link rel="stylesheet" href="./styles.css?v=1" />
-</head>
-<body>
-  <main class="app" id="app"></main>
+*{ box-sizing:border-box; }
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
+}
 
-  <!-- Floating Buttons -->
-  <button class="fab" id="fabAdd" aria-label="新增">+</button>
-  <button class="fab fabSub" id="fabQuick" aria-label="快速加入" title="快速加入">⚡</button>
+.app{
+  padding:16px 16px calc(92px + env(safe-area-inset-bottom));
+}
 
-  <!-- Add Menu -->
-  <div class="menu" id="addMenu" hidden role="dialog" aria-label="新增方式">
-    <button id="btnPickPhoto">照片圖庫</button>
-    <button id="btnCamera">拍照</button>
-    <button id="btnPickFile">選擇檔案</button>
-  </div>
+.header .brand{
+  font-size:12px;
+  letter-spacing:.12em;
+  color:#c47b4d;
+  font-weight:800;
+}
+.header h1{
+  margin:6px 0 0;
+  font-size:34px;
+  line-height:1.1;
+}
+.header .sub{
+  margin-top:6px;
+  color:var(--muted);
+}
 
-  <!-- hidden file inputs -->
-  <input id="filePicker" type="file" accept="image/*" hidden />
-  <input id="cameraPicker" type="file" accept="image/*" capture="environment" hidden />
+.chips{
+  display:flex;
+  gap:10px;
+  overflow:auto;
+  padding:12px 0;
+  -webkit-overflow-scrolling:touch;
+}
+.chip{
+  border:1px solid transparent;
+  background:#fff;
+  border-radius:999px;
+  padding:10px 14px;
+  font-weight:700;
+  white-space:nowrap;
+}
+.chip.on{
+  border-color:#b15a6e;
+  color:#b15a6e;
+}
 
-  <!-- Edit Modal -->
-  <div class="modal" id="editModal" hidden aria-hidden="true">
-    <div class="modalCard" role="dialog" aria-modal="true" aria-label="編輯單品">
-      <div class="modalHead">
-        <div class="modalTitle">編輯單品</div>
-        <button class="iconBtn" id="btnCloseEdit" aria-label="關閉">×</button>
-      </div>
+.grid{
+  display:grid;
+  grid-template-columns:repeat(2, 1fr);
+  gap:12px;
+}
+.card{
+  background:var(--card);
+  border:1px solid var(--stroke);
+  border-radius:18px;
+  overflow:hidden;
+  padding:0;
+  text-align:left;
+}
+.card img{
+  width:100%;
+  height:150px;
+  object-fit:cover;
+  background:#f2f2f2;
+  display:block;
+}
+.cardTitle{
+  padding:10px 12px;
+  font-weight:800;
+}
+.tag{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 10px;
+  border-radius:999px;
+  background:rgba(0,0,0,.06);
+  font-size:12px;
+  margin:0 12px 12px;
+  color:#555;
+}
 
-      <div class="field">
-        <div class="label">名稱 / 描述</div>
-        <input class="input" id="inTitle" placeholder="例如：深灰色立領羽絨外套，輕巧保暖" />
-      </div>
+.empty{
+  margin-top:42px;
+  text-align:center;
+  color:var(--muted);
+  padding:18px;
+  border:1px dashed #ddd;
+  border-radius:18px;
+  background:rgba(255,255,255,.55);
+}
 
-      <div class="field">
-        <div class="label">適穿溫度範圍（°C）</div>
-        <div class="row2">
-          <input class="input" id="inMin" inputmode="numeric" placeholder="0" />
-          <div class="dash">-</div>
-          <input class="input" id="inMax" inputmode="numeric" placeholder="18" />
-        </div>
-      </div>
+/* Bottom Nav */
+.bottomNav{
+  position:fixed;
+  left:0; right:0; bottom:0;
+  padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+  background:rgba(255,255,255,.92);
+  backdrop-filter:blur(10px);
+  border-top:1px solid var(--stroke);
+  display:flex;
+  justify-content:space-around;
+  gap:8px;
+}
+.bottomNav button{
+  flex:1;
+  border:0;
+  background:transparent;
+  padding:10px 0;
+  font-weight:800;
+  color:#666;
+  border-radius:14px;
+}
+.bottomNav button.on{
+  color:#b15a6e;
+  background:rgba(177,90,110,.10);
+}
 
-      <div class="field">
-        <div class="label">修改分類</div>
-        <div class="catGrid" id="catGrid"></div>
-      </div>
+/* FAB */
+.fab{
+  position:fixed;
+  right:18px;
+  bottom:calc(92px + env(safe-area-inset-bottom));
+  width:62px;
+  height:62px;
+  border-radius:999px;
+  border:0;
+  background:var(--primary);
+  color:#fff;
+  font-size:32px;
+  box-shadow:0 10px 28px rgba(0,0,0,.22);
+}
 
-      <button class="btnPrimary" id="btnSaveEdit">儲存修改</button>
-      <button class="btnDanger" id="btnDeleteEdit">刪除此單品</button>
-    </div>
-  </div>
+/* Menu */
+.menu{
+  position:fixed;
+  right:18px;
+  bottom:calc(160px + env(safe-area-inset-bottom));
+  width:230px;
+  background:#3b3b3b;
+  border-radius:18px;
+  overflow:hidden;
+  box-shadow:0 14px 40px rgba(0,0,0,.25);
+}
+.menu button{
+  width:100%;
+  border:0;
+  background:transparent;
+  color:#fff;
+  padding:14px 14px;
+  text-align:left;
+  font-weight:800;
+}
+.menu button + button{
+  border-top:1px solid rgba(255,255,255,.10);
+}
+.menu .danger{
+  color:#ffb4b4;
+}
 
-  <!-- Quick Add Modal -->
-  <div class="modal" id="quickModal" hidden aria-hidden="true">
-    <div class="modalCard" role="dialog" aria-modal="true" aria-label="快速加入基礎單品">
-      <div class="modalHead">
-        <div class="modalTitle">⚡ 快速加入基礎單品</div>
-        <button class="iconBtn" id="btnCloseQuick" aria-label="關閉">×</button>
-      </div>
-      <div class="quickGrid" id="quickGrid"></div>
-    </div>
-  </div>
+/* ===== Modal / Form ===== */
+.modal{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.35);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:16px;
+}
+.modalCard{
+  width:min(520px, 100%);
+  background:#fff;
+  border-radius:28px;
+  padding:16px;
+  box-shadow:0 18px 60px rgba(0,0,0,.25);
+  max-height:calc(100vh - 32px);
+  overflow:auto;
+  -webkit-overflow-scrolling:touch;
+}
+.modalHead{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:6px 4px 12px;
+}
+.modalTitle{
+  font-weight:900;
+  font-size:18px;
+}
+.iconBtn{
+  width:40px;height:40px;
+  border-radius:999px;
+  border:1px solid var(--stroke);
+  background:#fff;
+  font-weight:900;
+}
 
-  <!-- Pick Sheet (Bottom Sheet) -->
-  <div class="sheetMask" id="pickMask" hidden aria-hidden="true"></div>
-  <div class="sheet" id="pickSheet" hidden aria-hidden="true">
-    <div class="sheetHead">
-      <div class="sheetTitle" id="pickTitle">選擇</div>
-      <button class="iconBtn" id="btnClosePick" aria-label="關閉">×</button>
-    </div>
-    <div class="sheetBody" id="pickBody"></div>
-  </div>
+.field{ margin-top:12px; }
+.label{ font-weight:800; color:#666; font-size:13px; margin:0 0 8px; }
 
-  <nav class="bottomNav" aria-label="底部導覽">
-    <button id="tabWardrobe" class="on">衣櫃</button>
-    <button id="tabMix">自選</button>
-    <button id="tabInspo">靈感</button>
-    <button id="tabMe">個人</button>
-  </nav>
+.input{
+  width:100%;
+  border:1px solid var(--stroke);
+  border-radius:16px;
+  padding:12px 12px;
+  font-size:16px;
+  outline:none;
+  background:#fff;
+}
+.input:focus{
+  border-color:#b15a6e;
+  box-shadow:0 0 0 3px rgba(177,90,110,.12);
+}
 
-  <script type="module" src="./app.js?v=1"></script>
-</body>
-</html>
+.row2{
+  display:grid;
+  grid-template-columns:1fr 30px 1fr;
+  gap:8px;
+  align-items:center;
+}
+.dash{ text-align:center; color:#888; font-weight:900; }
+
+.catGrid{
+  display:grid;
+  grid-template-columns:repeat(2, 1fr);
+  gap:10px;
+}
+.catBtn{
+  border:1px solid var(--stroke);
+  background:#fff;
+  border-radius:16px;
+  padding:14px 12px;
+  font-weight:900;
+  text-align:center;
+}
+.catBtn.on{
+  background:#2b2b2b;
+  color:#fff;
+  border-color:#2b2b2b;
+}
+
+.btnDanger{
+  width:100%;
+  margin-top:10px;
+  background:#ffecec;
+  border:1px solid #ffd2d2;
+  color:#b42318;
+  border-radius:999px;
+  padding:14px;
+  font-weight:900;
+}
+
+/* 主 CTA（你截圖那顆紫色） */
+.btnPrimary{
+  width:100%;
+  margin-top:14px;
+  background:#9b6cff;
+  border:0;
+  color:#fff;
+  border-radius:999px;
+  padding:14px;
+  font-weight:900;
+  box-shadow:0 10px 26px rgba(155,108,255,.28);
+}
+.btnPrimary:active{ transform:translateY(1px); }
+.btnPrimary:focus{
+  outline:none;
+  box-shadow:0 0 0 3px rgba(155,108,255,.25), 0 10px 26px rgba(155,108,255,.28);
+}
+
+/* Quick grid（你那個快速加入） */
+.quickGrid{
+  display:grid;
+  grid-template-columns:repeat(2, 1fr);
+  gap:12px;
+}
+.quickItem{
+  border:1px solid var(--stroke);
+  border-radius:18px;
+  background:#fff;
+  padding:14px 12px;
+  text-align:center;
+  font-weight:900;
+}
+.quickDot{
+  width:62px; height:62px;
+  border-radius:999px;
+  margin:0 auto 10px;
+  background:rgba(0,0,0,.08);
+}
+
+/* Sheet（你選擇內搭/下著那個底部彈出） */
+.sheetMask{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.25);
+}
+.sheet{
+  position:fixed;
+  left:0; right:0;
+  bottom:0;
+  background:#fff;
+  border-top-left-radius:22px;
+  border-top-right-radius:22px;
+  box-shadow:0 -18px 60px rgba(0,0,0,.18);
+  padding:12px 12px calc(12px + env(safe-area-inset-bottom));
+}
+.sheetHead{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:6px 4px 10px;
+}
+.sheetTitle{
+  font-weight:900;
+  font-size:16px;
+}
+.sheetBody{
+  min-height:120px;
+}
+
+/* ===== Z-index 層級（避免你之前疊一堆卡死） ===== */
+.bottomNav{ z-index:40; }
+.fab{ z-index:50; }
+.menu{ z-index:60; }
+.sheetMask{ z-index:80; }
+.sheet{ z-index:90; }
+.modal{ z-index:100; }
