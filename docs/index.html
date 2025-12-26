@@ -11,88 +11,6 @@
   <link rel="apple-touch-icon" href="./icon-192.png" />
 
   <link rel="stylesheet" href="./styles.css" />
-
-  <style>
-    /* minimal add-ons to ensure UI works even if styles.css missing some parts */
-    .weatherBar{
-      margin-top:12px;
-      border:1px solid var(--stroke);
-      background:rgba(255,255,255,.8);
-      border-radius:18px;
-      padding:12px;
-      display:flex;
-      gap:12px;
-      align-items:flex-start;
-      justify-content:space-between;
-    }
-    .weatherLeft{ min-width: 0; }
-    .weatherTemp{ font-size:28px; font-weight:900; line-height:1; }
-    .weatherFeels{ margin-top:6px; color:var(--muted); font-weight:800; }
-    .weatherMeta{ margin-top:6px; color:var(--muted); font-size:12px; }
-    .btnSmall{
-      border:1px solid var(--stroke);
-      background:#fff;
-      border-radius:999px;
-      padding:10px 12px;
-      font-weight:900;
-      white-space:nowrap;
-    }
-    .hintBox{
-      margin-top:12px;
-      border:1px solid var(--stroke);
-      background:#fff;
-      border-radius:18px;
-      padding:12px;
-    }
-    .hintTitle{ font-weight:900; margin-bottom:8px; }
-    .hintList{ margin:0; padding-left:18px; color:#444; }
-    .hintList li{ margin:6px 0; }
-
-    .skeleton{
-      display:none;
-      margin-top:12px;
-      border:1px solid var(--stroke);
-      background:rgba(255,255,255,.7);
-      border-radius:18px;
-      padding:12px;
-    }
-    .skLine{
-      height:12px;
-      border-radius:10px;
-      background:rgba(0,0,0,.06);
-      margin:10px 0;
-      overflow:hidden;
-      position:relative;
-    }
-    .skLine::after{
-      content:"";
-      position:absolute; inset:0;
-      transform:translateX(-60%);
-      background:linear-gradient(90deg, transparent, rgba(255,255,255,.65), transparent);
-      animation:shine 1.1s infinite;
-    }
-    @keyframes shine{ to { transform:translateX(60%);} }
-
-    .toast{
-      position:fixed;
-      left:50%;
-      transform:translateX(-50%);
-      bottom:calc(100px + env(safe-area-inset-bottom));
-      background:rgba(0,0,0,.82);
-      color:#fff;
-      padding:10px 14px;
-      border-radius:999px;
-      font-weight:800;
-      font-size:13px;
-      opacity:0;
-      pointer-events:none;
-      transition:opacity .18s ease;
-      z-index:999;
-      max-width:min(560px, calc(100vw - 32px));
-      text-align:center;
-    }
-    .toast.show{ opacity:1; }
-  </style>
 </head>
 
 <body>
@@ -101,7 +19,7 @@
     <header class="header">
       <div class="brand">WARDROBE AI</div>
       <h1>今日穿搭</h1>
-      <div class="sub">定位抓取體感溫度，提供穿搭建議；你也能自選單品合成示意圖（後續接 AI 產圖）。</div>
+      <div class="sub">定位抓取體感溫度，推薦穿搭；也可自選單品合成示意圖。</div>
 
       <!-- Weather -->
       <section class="weatherBar" aria-label="天氣資訊">
@@ -115,7 +33,7 @@
         </div>
       </section>
 
-      <section class="skeleton" id="weatherSkeleton" aria-hidden="true">
+      <section class="skeleton" id="weatherSkeleton" aria-hidden="true" style="display:none;">
         <div class="skLine" style="width:42%"></div>
         <div class="skLine" style="width:72%"></div>
         <div class="skLine" style="width:58%"></div>
@@ -131,7 +49,7 @@
       </section>
     </header>
 
-    <!-- Chips (filters) -->
+    <!-- Chips -->
     <nav class="chips" aria-label="分類篩選">
       <button class="chip on" type="button" data-filter="all">全部</button>
       <button class="chip" type="button" data-filter="top">上衣</button>
@@ -143,22 +61,17 @@
 
     <!-- Grid -->
     <section aria-label="單品列表">
-      <div class="grid" id="grid">
-        <!-- cards will be rendered by your existing app logic (localStorage items) -->
-      </div>
-
+      <div class="grid" id="grid"></div>
       <div class="empty" id="empty" style="display:none;">
         尚無單品。點右下角「+」新增，或用「快速加入」先建立範例。
       </div>
     </section>
   </main>
 
-  <!-- Floating Action Button -->
-  <button class="fab" id="fab" type="button" aria-label="新增">
-    +
-  </button>
+  <!-- FAB -->
+  <button class="fab" id="fab" type="button" aria-label="新增">+</button>
 
-  <!-- Floating Menu -->
+  <!-- Menu -->
   <div class="menu" id="menu" style="display:none;" role="menu" aria-label="新增選單">
     <button type="button" id="menuPickPhoto" role="menuitem">照片圖庫</button>
     <button type="button" id="menuTakePhoto" role="menuitem">拍照</button>
@@ -166,7 +79,7 @@
     <button type="button" id="menuClose" role="menuitem" class="danger">關閉</button>
   </div>
 
-  <!-- Modal (Add/Edit) -->
+  <!-- Modal -->
   <div class="modal" id="modal" style="display:none;" role="dialog" aria-modal="true" aria-label="編輯單品">
     <div class="modalCard">
       <div class="modalHead">
@@ -186,6 +99,7 @@
           <button class="catBtn" type="button" data-cat="bottom">下身</button>
           <button class="catBtn" type="button" data-cat="outer">外套</button>
           <button class="catBtn" type="button" data-cat="shoes">鞋子</button>
+          <button class="catBtn" type="button" data-cat="accessory">配件</button>
         </div>
       </div>
 
@@ -209,13 +123,13 @@
   <!-- Toast -->
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <!-- App -->
+  <!-- Scripts -->
+  <script defer src="./db.js"></script>
   <script defer src="./app.js"></script>
 
-  <!-- Service Worker -->
   <script>
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js").catch(()=>{});
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
     }
   </script>
 </body>
