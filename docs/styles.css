@@ -256,3 +256,34 @@ body{
   padding:14px;
   font-weight:900;
 }
+.btnPrimary{
+  width:100%;
+  margin-top:14px;
+  background:#9b6cff;          /* 跟你截圖那種紫色主 CTA 接近 */
+  border:0;
+  color:#fff;
+  border-radius:999px;
+  padding:14px;
+  font-weight:900;
+  box-shadow:0 10px 26px rgba(155,108,255,.28);
+}
+.btnPrimary:active{
+  transform:translateY(1px);
+}
+.btnPrimary:focus{
+  outline:none;
+  box-shadow:0 0 0 3px rgba(155,108,255,.25), 0 10px 26px rgba(155,108,255,.28);
+}
+
+/* Modal 在手機畫面可捲動，避免被遮住 */
+.modalCard{
+  max-height:calc(100vh - 32px);
+  overflow:auto;
+  -webkit-overflow-scrolling:touch;
+}
+
+/* 避免 modal 開啟時，底下還能點到 menu/fab */
+.modal{ z-index:100; }
+.menu{ z-index:60; }
+.fab{ z-index:50; }
+.bottomNav{ z-index:40; }
