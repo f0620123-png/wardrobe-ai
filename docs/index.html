@@ -3,89 +3,61 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#fbf6ef" />
   <title>我的衣櫃日記</title>
 
-  <!-- GitHub Pages 專案站一定要用相對路徑 ./ -->
-  <link rel="stylesheet" href="./styles.css?v=7" />
+  <!-- 重要：用相對路徑，才能在 /wardrobe-ai/ 這種 GitHub Pages 專案頁正常 -->
+  <link rel="stylesheet" href="./styles.css?v=1" />
 
-  <!-- 若你有放，會更完整；沒有也不影響主功能 -->
-  <link rel="manifest" href="./manifest.webmanifest?v=7" />
-  <link rel="icon" href="./icon-192.png" />
-  <link rel="apple-touch-icon" href="./icon-192.png" />
+  <!-- 可選：如果你有 manifest -->
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <meta name="theme-color" content="#fbf6ef" />
 </head>
-
 <body>
   <div class="app" id="app">
-    <header class="header">
+    <div class="header">
       <div class="brand">MY WARDROBE</div>
       <h1>我的衣櫃日記</h1>
-      <div class="sub" id="subText">今天收集了 0 件寶貝</div>
-    </header>
+      <div class="sub" id="subline">今天收集了 0 件寶貝</div>
+    </div>
 
-    <nav class="chips" id="categoryChips" aria-label="分類">
-      <button class="chip on" data-cat="all" type="button">全部</button>
-      <button class="chip" data-cat="top" type="button">上衣</button>
-      <button class="chip" data-cat="bottom" type="button">下著</button>
-      <button class="chip" data-cat="inner" type="button">內搭</button>
-      <button class="chip" data-cat="outer" type="button">外套</button>
-      <button class="chip" data-cat="shoes" type="button">鞋子</button>
-      <button class="chip" data-cat="acc" type="button">配件</button>
-    </nav>
+    <div class="chips" id="chips"></div>
 
-    <main>
-      <div id="empty" class="empty" hidden>尚無衣物，點右下角 + 新增</div>
-      <div id="grid" class="grid" aria-live="polite"></div>
-    </main>
+    <div id="content">
+      <div class="empty" id="empty">
+        尚無衣物，點右下角 + 新增
+      </div>
+      <div class="grid" id="grid" style="display:none;"></div>
+    </div>
   </div>
 
-  <!-- 底部導覽（你的 app.js 若會自建也不會衝突；保留一個穩定容器） -->
-  <nav class="bottomNav" id="bottomNav" aria-label="主導覽">
-    <button class="on" data-tab="wardrobe" type="button">衣櫃</button>
-    <button data-tab="mix" type="button">自選</button>
-    <button data-tab="sense" type="button">靈感</button>
-    <button data-tab="me" type="button">個人</button>
-  </nav>
+  <!-- Floating Action Button -->
+  <button class="fab" id="fab" aria-label="新增">+</button>
 
-  <!-- 浮動按鈕 -->
-  <button class="fab" id="fabAdd" type="button" aria-label="新增">+</button>
+  <!-- FAB Menu -->
+  <div class="menu" id="menu" style="display:none;">
+    <button id="btnPick">照片圖庫</button>
+    <button id="btnCamera">拍照</button>
+    <button id="btnFile">選擇檔案</button>
+    <button id="btnQuick">⚡ 快速加入基礎單品</button>
+  </div>
 
-  <!-- 主程式：同樣用 ./ 相對路徑 -->
-  <script src="./db.js?v=7" defer></script>
-  <script src="./app.js?v=7" defer></script>
+  <!-- Hidden file inputs -->
+  <input id="filePick" type="file" accept="image/*" style="display:none" />
+  <input id="fileCamera" type="file" accept="image/*" capture="environment" style="display:none" />
 
-  <!-- Service Worker：強制更新、立即接管、接管後自動刷新 -->
-  <script>
-    (function () {
-      if (!('serviceWorker' in navigator)) return;
+  <!-- Bottom Nav -->
+  <div class="bottomNav" id="bottomNav">
+    <button class="on" data-tab="wardrobe">衣櫃</button>
+    <button data-tab="mix">自選</button>
+    <button data-tab="inspire">靈感</button>
+    <button data-tab="me">個人</button>
+  </div>
 
-      window.addEventListener('load', async () => {
-        try {
-          const reg = await navigator.serviceWorker.register('./sw.js?v=7', { scope: './' });
+  <!-- Modal Root -->
+  <div id="modalRoot"></div>
 
-          // 有新 SW 時，請它立刻跳過等待
-          reg.addEventListener('updatefound', () => {
-            const sw = reg.installing;
-            if (!sw) return;
-            sw.addEventListener('statechange', () => {
-              if (sw.state === 'installed' && navigator.serviceWorker.controller) {
-                if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-              }
-            });
-          });
-
-          // 新 SW 接管後，刷新一次讓 CSS/JS 立刻變新
-          let refreshing = false;
-          navigator.serviceWorker.addEventListener('controllerchange', () => {
-            if (refreshing) return;
-            refreshing = true;
-            location.reload();
-          });
-        } catch (e) {
-          console.warn('SW register failed:', e);
-        }
-      });
-    })();
-  </script>
+  <!-- 重要：defer，確保 DOM 都存在才綁事件 -->
+  <script src="./db.js?v=1" defer></script>
+  <script src="./app.js?v=1" defer></script>
 </body>
 </html>
