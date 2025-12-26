@@ -6,78 +6,86 @@
   <meta name="theme-color" content="#fbf6ef" />
   <title>我的衣櫃日記</title>
 
-  <link rel="manifest" href="./manifest.webmanifest?v=3">
-  <link rel="icon" sizes="192x192" href="./icon-192.png">
-  <link rel="icon" sizes="512x512" href="./icon-512.png">
+  <!-- GitHub Pages 專案站一定要用相對路徑 ./ -->
+  <link rel="stylesheet" href="./styles.css?v=7" />
 
-  <!-- 相對路徑 + 版本號（解決 GitHub Pages /repo/ 路徑問題 + 強制驗收） -->
-  <link rel="stylesheet" href="./styles.css?v=3" />
+  <!-- 若你有放，會更完整；沒有也不影響主功能 -->
+  <link rel="manifest" href="./manifest.webmanifest?v=7" />
+  <link rel="icon" href="./icon-192.png" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
 </head>
 
 <body>
-  <main class="app" id="app"></main>
+  <div class="app" id="app">
+    <header class="header">
+      <div class="brand">MY WARDROBE</div>
+      <h1>我的衣櫃日記</h1>
+      <div class="sub" id="subText">今天收集了 0 件寶貝</div>
+    </header>
 
-  <!-- FAB -->
-  <button class="fab" id="fabAdd" aria-label="新增">+</button>
+    <nav class="chips" id="categoryChips" aria-label="分類">
+      <button class="chip on" data-cat="all" type="button">全部</button>
+      <button class="chip" data-cat="top" type="button">上衣</button>
+      <button class="chip" data-cat="bottom" type="button">下著</button>
+      <button class="chip" data-cat="inner" type="button">內搭</button>
+      <button class="chip" data-cat="outer" type="button">外套</button>
+      <button class="chip" data-cat="shoes" type="button">鞋子</button>
+      <button class="chip" data-cat="acc" type="button">配件</button>
+    </nav>
 
-  <!-- Menu -->
-  <div class="menu" id="addMenu" hidden role="dialog" aria-label="新增方式">
-    <button id="btnPickPhoto">照片圖庫</button>
-    <button id="btnCamera">拍照</button>
-    <button id="btnPickFile">選擇檔案</button>
+    <main>
+      <div id="empty" class="empty" hidden>尚無衣物，點右下角 + 新增</div>
+      <div id="grid" class="grid" aria-live="polite"></div>
+    </main>
   </div>
 
-  <input id="filePicker" type="file" accept="image/*" hidden />
-  <input id="cameraPicker" type="file" accept="image/*" capture="environment" hidden />
-
-  <!-- Edit Modal -->
-  <div class="modal" id="editModal" hidden aria-hidden="true">
-    <div class="modalCard" role="dialog" aria-modal="true" aria-label="編輯單品">
-      <div class="modalHead">
-        <div class="modalTitle">編輯單品</div>
-        <button class="iconBtn" id="btnCloseEdit" aria-label="關閉">×</button>
-      </div>
-
-      <div class="field">
-        <div class="label">名稱 / 描述</div>
-        <input class="input" id="inTitle" placeholder="例如：深灰色立領羽絨外套，輕巧保暖" />
-      </div>
-
-      <div class="field">
-        <div class="label">適穿溫度範圍（°C）</div>
-        <div class="row2">
-          <input class="input" id="inMin" inputmode="numeric" placeholder="0" />
-          <div class="dash">-</div>
-          <input class="input" id="inMax" inputmode="numeric" placeholder="18" />
-        </div>
-      </div>
-
-      <div class="field">
-        <div class="label">修改分類</div>
-        <div class="catGrid" id="catGrid"></div>
-      </div>
-
-      <button class="btnPrimary" id="btnSaveEdit">儲存修改</button>
-      <button class="btnDanger" id="btnDeleteEdit">刪除此單品</button>
-    </div>
-  </div>
-
-  <!-- Bottom Nav -->
-  <nav class="bottomNav" aria-label="底部導覽">
-    <button id="tabWardrobe" class="on">衣櫃</button>
-    <button id="tabMix">自選</button>
-    <button id="tabInspo">靈感</button>
-    <button id="tabMe">個人</button>
+  <!-- 底部導覽（你的 app.js 若會自建也不會衝突；保留一個穩定容器） -->
+  <nav class="bottomNav" id="bottomNav" aria-label="主導覽">
+    <button class="on" data-tab="wardrobe" type="button">衣櫃</button>
+    <button data-tab="mix" type="button">自選</button>
+    <button data-tab="sense" type="button">靈感</button>
+    <button data-tab="me" type="button">個人</button>
   </nav>
 
-  <!-- app.js 相對路徑 + 版本號 -->
-  <script type="module" src="./app.js?v=3"></script>
+  <!-- 浮動按鈕 -->
+  <button class="fab" id="fabAdd" type="button" aria-label="新增">+</button>
 
-  <!-- SW：相對路徑 -->
+  <!-- 主程式：同樣用 ./ 相對路徑 -->
+  <script src="./db.js?v=7" defer></script>
+  <script src="./app.js?v=7" defer></script>
+
+  <!-- Service Worker：強制更新、立即接管、接管後自動刷新 -->
   <script>
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js?v=3").catch(()=>{});
-    }
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+
+      window.addEventListener('load', async () => {
+        try {
+          const reg = await navigator.serviceWorker.register('./sw.js?v=7', { scope: './' });
+
+          // 有新 SW 時，請它立刻跳過等待
+          reg.addEventListener('updatefound', () => {
+            const sw = reg.installing;
+            if (!sw) return;
+            sw.addEventListener('statechange', () => {
+              if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+                if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+              }
+            });
+          });
+
+          // 新 SW 接管後，刷新一次讓 CSS/JS 立刻變新
+          let refreshing = false;
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (refreshing) return;
+            refreshing = true;
+            location.reload();
+          });
+        } catch (e) {
+          console.warn('SW register failed:', e);
+        }
+      });
+    })();
   </script>
 </body>
 </html>
