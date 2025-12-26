@@ -8,6 +8,7 @@
 </head>
 <body>
   <main class="app">
+    <!-- 衣櫃 -->
     <section class="page" data-page="wardrobe">
       <header class="header">
         <div class="brand">MY WARDROBE</div>
@@ -18,8 +19,11 @@
       <div class="chips" id="catChips"></div>
       <div class="grid" id="itemGrid"></div>
 
-      <button class="fab" id="fabAdd" aria-label="新增衣物">+</button>
+      <!-- 右下：+ 與 ⚡ -->
+      <button class="fab fab--add" id="fabAdd" aria-label="新增衣物">+</button>
+      <button class="fab fab--quick" id="fabQuick" aria-label="快速加入基礎單品">⚡</button>
 
+      <!-- 新增選單 -->
       <div class="menu" id="addMenu" hidden>
         <button id="btnPickPhoto">照片圖庫 / 選擇檔案</button>
         <button id="btnCloseMenu" class="danger">取消</button>
@@ -28,14 +32,54 @@
       <input id="fileInput" type="file" accept="image/*" hidden />
     </section>
 
+    <!-- 自選穿搭 -->
     <section class="page" data-page="mix" hidden>
       <header class="header">
         <div class="brand">MIX & MATCH</div>
         <h1>自選穿搭</h1>
-        <div class="sub">下一步再做</div>
+        <div class="sub">點格子選衣，完成後可儲存</div>
       </header>
+
+      <div class="mixGrid" id="mixGrid">
+        <button class="slot" data-slot="inner">
+          <div class="slotHint">內搭</div>
+          <div class="slotThumb" data-thumb="inner"></div>
+        </button>
+
+        <button class="slot" data-slot="top">
+          <div class="slotHint">上衣</div>
+          <div class="slotThumb" data-thumb="top"></div>
+        </button>
+
+        <button class="slot" data-slot="bottom">
+          <div class="slotHint">下著</div>
+          <div class="slotThumb" data-thumb="bottom"></div>
+        </button>
+
+        <button class="slot" data-slot="outer">
+          <div class="slotHint">外套</div>
+          <div class="slotThumb" data-thumb="outer"></div>
+        </button>
+
+        <button class="slot" data-slot="shoes">
+          <div class="slotHint">鞋子</div>
+          <div class="slotThumb" data-thumb="shoes"></div>
+        </button>
+
+        <button class="slot slot--big" data-slot="accessory">
+          <div class="slotHint">配件</div>
+          <div class="slotThumb" data-thumb="accessory"></div>
+        </button>
+      </div>
+
+      <div class="mixActions">
+        <button class="btnSoft" id="btnSaveOutfit">♡ 儲存</button>
+        <button class="btnSoft" id="btnAddCalendar" disabled>加入日曆（下一步）</button>
+        <button class="btnPrimary" id="btnTryOn" disabled>✨ 虛擬試穿（下一步）</button>
+      </div>
     </section>
 
+    <!-- 靈感 / 個人 先保留空殼 -->
     <section class="page" data-page="inspo" hidden>
       <header class="header">
         <div class="brand">STYLE</div>
@@ -90,6 +134,33 @@
       <button class="btnDanger" id="btnEditDelete">刪除此單品</button>
     </div>
   </div>
+
+  <!-- ⚡ 快速加入 Modal -->
+  <div class="modal" id="quickModal" hidden role="dialog" aria-modal="true">
+    <div class="modalCard">
+      <div class="modalHead">
+        <div class="modalTitle">⚡ 快速加入基礎單品</div>
+        <button class="iconBtn" id="btnQuickClose" aria-label="關閉">✕</button>
+      </div>
+
+      <div class="quickGrid" id="quickGrid"></div>
+    </div>
+  </div>
+
+  <!-- 自選：底部選擇面板 -->
+  <div class="sheet" id="pickSheet" hidden role="dialog" aria-modal="true">
+    <div class="sheetCard">
+      <div class="sheetHead">
+        <div class="sheetTitle" id="pickTitle">選擇</div>
+        <button class="iconBtn" id="btnPickClose" aria-label="關閉">✕</button>
+      </div>
+
+      <button class="sheetNone" id="btnPickNone">不選擇此項</button>
+      <div class="pickList" id="pickList"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
 
   <script type="module" src="./app.js"></script>
 </body>
