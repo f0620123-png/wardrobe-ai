@@ -52,7 +52,28 @@ let state = {
 const $ = (id) => document.getElementById(id);
 
 init();
+function setOverlay(on) {
+  document.documentElement.classList.toggle("noScroll", on);
+  document.body.classList.toggle("noScroll", on);
+}
 
+function closeAllOverlays() {
+  const addMenu = document.getElementById("addMenu");
+  const editModal = document.getElementById("editModal");
+  const quickModal = document.getElementById("quickModal");
+  const pickSheet = document.getElementById("pickSheet");
+
+  if (addMenu) addMenu.hidden = true;
+  if (editModal) editModal.hidden = true;
+  if (quickModal) quickModal.hidden = true;
+  if (pickSheet) pickSheet.hidden = true;
+
+  // 清狀態（避免「選擇」標題空白/亂跳）
+  state.editingId = null;
+  state.mix.pickingCat = null;
+
+  setOverlay(false);
+}
 function init() {
   bindNav();
   renderChips();
