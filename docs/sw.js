@@ -1,4 +1,6 @@
-/* docs/sw.js */
+/* docs/sw.js
+ * Cache resilient for GitHub Pages
+ */
 
 const CACHE_VERSION = "wardrobe-ai-v8";
 const CORE_ASSETS = [
@@ -16,7 +18,6 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE_VERSION);
-
       await Promise.allSettled(
         CORE_ASSETS.map(async (url) => {
           try {
@@ -26,7 +27,6 @@ self.addEventListener("install", (event) => {
           } catch (_) {}
         })
       );
-
       self.skipWaiting();
     })()
   );
