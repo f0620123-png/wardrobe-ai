@@ -2,11 +2,68 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Wardrobe AI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>我的衣櫃日記</title>
+  <link rel="stylesheet" href="./styles.css" />
 </head>
-<body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Noto Sans TC,sans-serif;padding:24px">
-  <h1>Wardrobe AI 已上線（第 1 步）</h1>
-  <p>如果你看到這行，表示 GitHub Pages 部署成功。</p>
+<body>
+  <main class="app">
+    <!-- 衣櫃 -->
+    <section class="page" data-page="wardrobe">
+      <header class="header">
+        <div class="brand">MY WARDROBE</div>
+        <h1>我的衣櫃日記</h1>
+        <div class="sub" id="countText">今天收集了 0 件寶貝</div>
+      </header>
+
+      <div class="chips" id="catChips"></div>
+
+      <div class="grid" id="itemGrid"></div>
+
+      <!-- 右下按鈕：+ 與 ⚡（先做 +，⚡下一步做快速加入） -->
+      <button class="fab" id="fabAdd" aria-label="新增衣物">+</button>
+
+      <!-- 新增選單 -->
+      <div class="menu" id="addMenu" hidden>
+        <button id="btnPickPhoto">照片圖庫 / 選擇檔案</button>
+        <button id="btnCloseMenu" class="danger">取消</button>
+      </div>
+
+      <input id="fileInput" type="file" accept="image/*" hidden />
+    </section>
+
+    <!-- 其他頁先放空殼，後面再加 -->
+    <section class="page" data-page="mix" hidden>
+      <header class="header">
+        <div class="brand">MIX & MATCH</div>
+        <h1>自選穿搭</h1>
+        <div class="sub">下一步再做</div>
+      </header>
+    </section>
+
+    <section class="page" data-page="inspo" hidden>
+      <header class="header">
+        <div class="brand">STYLE</div>
+        <h1>穿搭靈感</h1>
+        <div class="sub">下一步再做</div>
+      </header>
+    </section>
+
+    <section class="page" data-page="profile" hidden>
+      <header class="header">
+        <h1>個人</h1>
+        <div class="sub">下一步再做</div>
+      </header>
+    </section>
+  </main>
+
+  <nav class="bottomNav" role="navigation" aria-label="主選單">
+    <button data-nav="wardrobe" class="on">衣櫃</button>
+    <button data-nav="mix">自選</button>
+    <button data-nav="inspo">靈感</button>
+    <button data-nav="profile">個人</button>
+  </nav>
+
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
