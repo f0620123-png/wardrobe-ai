@@ -1,72 +1,76 @@
-/* docs/sw.js
- * 避免 iOS / Safari 舊快取導致「介面看起來正常但按鈕失效」
- * - HTML：network-first
- * - 靜態：stale-while-revalidate
- * - 支援 SKIP_WAITING
- */
-
-const CACHE_NAME = "wardrobe-cache-v10";
-const APP_SHELL = [
+/* docs/sw.js */
+const SW_VERSION = "sw-v6"; // 你每次要強制更新，就改這個字串
+const CORE = [
   "./",
   "./index.html",
-  "./app.js",
   "./styles.css",
+  "./app.js",
   "./manifest.webmanifest",
-  "./icon-192.png",
-  "./icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil((async () => {
-    const cache = await caches.open(CACHE_NAME);
-    try { await cache.addAll(APP_SHELL); } catch {}
-    self.skipWaiting();
-  })());
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(SW_VERSION);
+      await cache.addAll(CORE.map((u) => new Request(u, { cache: "reload" })));
+      self.skipWaiting();
+    })()
+  );
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil((async () => {
-    const keys = await caches.keys();
-    await Promise.all(keys.map((k) => (k !== CACHE_NAME ? caches.delete(k) : Promise.resolve())));
-    await self.clients.claim();
-  })());
+  event.waitUntil(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => k !== SW_VERSION).map((k) => caches.delete(k)));
+      await self.clients.claim();
+    })()
+  );
 });
 
-self.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
-});
+function isCore(req) {
+  const url = new URL(req.url);
+  return CORE.some((p) => url.pathname.endsWith(p.replace("./", "")));
+}
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
+  const url = new URL(req.url);
+
+  // Only handle GET
   if (req.method !== "GET") return;
 
-  const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return; // 不 cache 跨域（含 Worker）
+  // Bypass cross-origin API calls (your Worker)
+  if (url.origin !== self.location.origin) return;
 
-  // HTML 導航：network-first
-  if (req.mode === "navigate" || (req.headers.get("accept") || "").includes("text/html")) {
-    event.respondWith((async () => {
-      try {
-        const fresh = await fetch(req, { cache: "no-store" });
-        const cache = await caches.open(CACHE_NAME);
-        cache.put(req, fresh.clone()).catch(() => {});
-        return fresh;
-      } catch {
-        return (await caches.match(req)) || (await caches.match("./index.html"));
-      }
-    })());
+  // Network-first for core files (avoid "更新卡住")
+  if (isCore(req) || url.pathname.endsWith("/app.js") || url.pathname.endsWith("/styles.css") || url.pathname.endsWith("/index.html")) {
+    event.respondWith(
+      (async () => {
+        const cache = await caches.open(SW_VERSION);
+        try {
+          const fresh = await fetch(req, { cache: "no-store" });
+          if (fresh && fresh.ok) cache.put(req, fresh.clone());
+          return fresh;
+        } catch {
+          const cached = await cache.match(req);
+          if (cached) return cached;
+          return new Response("Offline", { status: 503 });
+        }
+      })()
+    );
     return;
   }
 
-  // 靜態：stale-while-revalidate
-  event.respondWith((async () => {
-    const cached = await caches.match(req);
-    const fetchPromise = fetch(req).then(async (res) => {
-      const cache = await caches.open(CACHE_NAME);
-      cache.put(req, res.clone()).catch(() => {});
-      return res;
-    }).catch(() => null);
-
-    return cached || (await fetchPromise) || new Response("", { status: 504 });
-  })());
+  // Cache-first for other static assets
+  event.respondWith(
+    (async () => {
+      const cache = await caches.open(SW_VERSION);
+      const cached = await cache.match(req);
+      if (cached) return cached;
+      const fresh = await fetch(req);
+      if (fresh && fresh.ok) cache.put(req, fresh.clone());
+      return fresh;
+    })()
+  );
 });
