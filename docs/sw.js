@@ -1,17 +1,10 @@
-/* docs/sw.js
-   - Cache core assets
-   - Stale-while-revalidate for static files
-   - Network-first for navigations (index.html)
-   - Version bump to force refresh
-*/
+/* docs/sw.js */
 
-const SW_VERSION = "sw-v1.0.0"; // 每次要強制刷新就改這個字串
-const CACHE_NAME = `wardrobe-cache-${SW_VERSION}`;
-
-const CORE_ASSETS = [
+const CACHE_NAME = "mix-match-cache-v1.0.0";
+const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css",
+  "./style.css",
   "./app.js",
   "./db.js",
   "./manifest.webmanifest",
@@ -20,72 +13,41 @@ const CORE_ASSETS = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil((async () => {
-    const cache = await caches.open(CACHE_NAME);
-    await cache.addAll(CORE_ASSETS);
-    self.skipWaiting();
-  })());
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil((async () => {
-    const keys = await caches.keys();
-    await Promise.all(keys.map((k) => {
-      if (k !== CACHE_NAME) return caches.delete(k);
-    }));
-    await self.clients.claim();
-  })());
+  event.waitUntil(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => (k === CACHE_NAME ? null : caches.delete(k))));
+      await self.clients.claim();
+    })()
+  );
 });
-
-self.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "SKIP_WAITING") {
-    self.skipWaiting();
-  }
-});
-
-function isNavigationRequest(req) {
-  return req.mode === "navigate" ||
-    (req.method === "GET" && req.headers.get("accept")?.includes("text/html"));
-}
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
+  const url = new URL(req.url);
 
-  // only handle GET
+  // Only handle same-origin GET
   if (req.method !== "GET") return;
+  if (url.origin !== self.location.origin) return;
 
-  // Network-first for navigation (fresh UI)
-  if (isNavigationRequest(req)) {
-    event.respondWith((async () => {
-      try {
-        const fresh = await fetch(req, { cache: "no-store" });
+  event.respondWith(
+    (async () => {
+      const cached = await caches.match(req);
+      if (cached) return cached;
+
+      const res = await fetch(req);
+      // Cache static-like responses
+      if (res.ok && (url.pathname.endsWith(".css") || url.pathname.endsWith(".js") || url.pathname.endsWith(".html") || url.pathname.endsWith(".png") || url.pathname.endsWith(".webmanifest"))) {
         const cache = await caches.open(CACHE_NAME);
-        cache.put("./index.html", fresh.clone());
-        return fresh;
-      } catch {
-        const cache = await caches.open(CACHE_NAME);
-        const cached = await cache.match("./index.html");
-        return cached || new Response("Offline", { status: 503 });
+        cache.put(req, res.clone());
       }
-    })());
-    return;
-  }
-
-  // Stale-while-revalidate for static assets
-  event.respondWith((async () => {
-    const cache = await caches.open(CACHE_NAME);
-    const cached = await cache.match(req, { ignoreSearch: true });
-
-    const fetchPromise = (async () => {
-      try {
-        const res = await fetch(req);
-        if (res && res.ok) cache.put(req, res.clone());
-        return res;
-      } catch {
-        return null;
-      }
-    })();
-
-    return cached || (await fetchPromise) || new Response("Offline", { status: 503 });
-  })());
+      return res;
+    })()
+  );
 });
