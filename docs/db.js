@@ -1,66 +1,99 @@
 /* docs/db.js
-   localStorage wrapper
-   - Items
-   - UI prefs
-   - Weather cache
+   IndexedDB: items (store image as Blob)
 */
 
-(() => {
-  const STORAGE_KEY = "wardrobe.items.v3";
-  const STORAGE_UI_KEY = "wardrobe.ui.v1";
-  const LS_WEATHER_KEY = "wardrobe.weather.cache.v1";
+const DB_NAME = "wardrobe_db_v1";
+const DB_VER = 1;
 
-  function safeParse(raw, fallback) {
-    try { return JSON.parse(raw); } catch { return fallback; }
-  }
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VER);
 
-  function loadItems() {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const arr = raw ? safeParse(raw, []) : [];
-    return Array.isArray(arr) ? arr : [];
-  }
+    req.onupgradeneeded = () => {
+      const db = req.result;
 
-  function saveItems(items) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-  }
+      if (!db.objectStoreNames.contains("items")) {
+        const store = db.createObjectStore("items", { keyPath: "id", autoIncrement: true });
+        store.createIndex("by_category", "category", { unique: false });
+        store.createIndex("by_createdAt", "createdAt", { unique: false });
+      }
 
-  function loadUI() {
-    const raw = localStorage.getItem(STORAGE_UI_KEY);
-    return raw ? safeParse(raw, {}) : {};
-  }
+      if (!db.objectStoreNames.contains("outfits")) {
+        const store = db.createObjectStore("outfits", { keyPath: "id", autoIncrement: true });
+        store.createIndex("by_createdAt", "createdAt", { unique: false });
+      }
+    };
 
-  function saveUI(ui) {
-    localStorage.setItem(STORAGE_UI_KEY, JSON.stringify(ui || {}));
-  }
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
 
-  function readWeatherCache() {
-    const raw = localStorage.getItem(LS_WEATHER_KEY);
-    return raw ? safeParse(raw, null) : null;
-  }
+async function withStore(storeName, mode, fn) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, mode);
+    const store = tx.objectStore(storeName);
 
-  function writeWeatherCache(obj) {
-    localStorage.setItem(LS_WEATHER_KEY, JSON.stringify(obj));
-  }
+    let result;
+    Promise.resolve()
+      .then(() => fn(store))
+      .then((r) => (result = r))
+      .catch(reject);
 
-  function clearWeatherCache() {
-    localStorage.removeItem(LS_WEATHER_KEY);
-  }
+    tx.oncomplete = () => resolve(result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
 
-  function clearAll() {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(STORAGE_UI_KEY);
-    localStorage.removeItem(LS_WEATHER_KEY);
-  }
+// ===== Items =====
+async function dbGetAllItems() {
+  return withStore("items", "readonly", (store) => {
+    return new Promise((resolve, reject) => {
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  });
+}
 
-  window.DB = {
-    keys: { STORAGE_KEY, STORAGE_UI_KEY, LS_WEATHER_KEY },
-    loadItems,
-    saveItems,
-    loadUI,
-    saveUI,
-    readWeatherCache,
-    writeWeatherCache,
-    clearWeatherCache,
-    clearAll,
-  };
-})();
+async function dbGetItem(id) {
+  return withStore("items", "readonly", (store) => {
+    return new Promise((resolve, reject) => {
+      const req = store.get(Number(id));
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  });
+}
+
+async function dbPutItem(item) {
+  return withStore("items", "readwrite", (store) => {
+    return new Promise((resolve, reject) => {
+      const req = store.put(item);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  });
+}
+
+async function dbDeleteItem(id) {
+  return withStore("items", "readwrite", (store) => {
+    return new Promise((resolve, reject) => {
+      const req = store.delete(Number(id));
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    });
+  });
+}
+
+async function dbClearItems() {
+  return withStore("items", "readwrite", (store) => {
+    return new Promise((resolve, reject) => {
+      const req = store.clear();
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    });
+  });
+}
