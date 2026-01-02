@@ -1,0 +1,83 @@
+/* docs/style.css */
+/* === Hotfix: FAB always clickable on iOS Safari/PWA === */
+
+:root{
+  --fab-size: 64px;
+  --fab-radius: 18px;
+  --fab-bottom: calc(88px + env(safe-area-inset-bottom)); /* above bottom nav */
+  --fab-right: 18px;
+}
+
+/* 有些佈景會用 ::before/::after 當背景漸層，容易蓋住點擊 */
+body::before,
+body::after,
+.bg::before,
+.bg::after{
+  pointer-events: none !important;
+}
+
+/* 保底：所有全螢幕覆蓋層，如果只是視覺用，別吃點擊 */
+.overlay,
+.backdrop,
+.gradient-layer,
+.decor-layer{
+  pointer-events: none;
+}
+
+/* FAB：提高層級 + 確保可點 */
+.fab,
+#fab,
+#fabAdd,
+#btnAdd,
+button[data-fab="add"]{
+  position: fixed !important;
+  right: var(--fab-right) !important;
+  bottom: var(--fab-bottom) !important;
+
+  width: var(--fab-size) !important;
+  height: var(--fab-size) !important;
+  border-radius: var(--fab-radius) !important;
+
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+
+  z-index: 99999 !important;           /* 关键：永遠在最上層 */
+  pointer-events: auto !important;     /* 关键：可點 */
+  touch-action: manipulation !important;
+  -webkit-tap-highlight-color: transparent;
+
+  /* 你原本的外觀如果已有，這些不會影響；沒有的話給保底樣式 */
+  border: none;
+  outline: none;
+}
+
+/* 避免底部導覽列或容器用 transform 造成 fixed 疊層怪問題 */
+.bottom-nav,
+.tabbar,
+nav,
+footer{
+  transform: none !important;
+}
+
+/* 若你的 FAB 在某個容器內（而不是 body 直接子層），容器可能有 pointer-events:none */
+.fab-wrap,
+.fab-container{
+  pointer-events: none; /* 外層不吃點擊 */
+}
+.fab-wrap .fab,
+.fab-container .fab{
+  pointer-events: auto; /* FAB 自己吃點擊 */
+}
+
+/* iOS 有時會把 fixed 元素點擊判定不穩，給一個 “可點擊的 hit area” */
+.fab::before,
+#fab::before,
+#fabAdd::before,
+#btnAdd::before,
+button[data-fab="add"]::before{
+  content:"";
+  position:absolute;
+  inset:-10px;          /* 擴大可點區域 */
+  border-radius: 26px;
+}
