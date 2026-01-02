@@ -11,10 +11,10 @@
   <link rel="icon" sizes="512x512" href="./icon-512.png" />
   <link rel="apple-touch-icon" href="./icon-192.png" />
 
-  <!-- v7.2: query 只是用來讓瀏覽器重新抓；SW 會 ignoreSearch，避免 cache 爆炸 -->
-  <link rel="stylesheet" href="./style.css?v=7.2" />
+  <!-- v7.3：改用新檔名，避開所有舊快取與錯誤 cache -->
+  <link rel="stylesheet" href="./style.v73.css?v=7.3" />
 
-  <!-- CSS Fail Banner (即便 CSS 404 也會顯示提示，而不是整頁純文字讓你以為壞了) -->
+  <!-- CSS Fail Banner（更可靠的檢測：CSS 會設定 --css_loaded:1） -->
   <style>
     .cssFailBanner{display:none;position:sticky;top:0;z-index:9999;background:#111827;color:#fff;padding:10px 12px;font:14px/1.4 system-ui}
     .cssFailBanner a{color:#F472B6;font-weight:800}
@@ -22,24 +22,24 @@
   <script>
     window.addEventListener("load", () => {
       setTimeout(() => {
-        const bg = getComputedStyle(document.body).backgroundImage || "";
-        if (!bg.includes("radial-gradient")) {
+        const v = getComputedStyle(document.documentElement).getPropertyValue("--css_loaded").trim();
+        if (v !== "1") {
           const b = document.getElementById("cssFailBanner");
           if (b) b.style.display = "block";
         }
-      }, 800);
+      }, 600);
     });
   </script>
 </head>
 
 <body>
   <div id="cssFailBanner" class="cssFailBanner">
-    偵測到樣式未載入（可能是快取或路徑問題）。
-    請嘗試開啟 <a href="./?update=999">?update=999</a>，或在 iOS「設定 → Safari → 進階 → 網站資料」清除本網站後重開。
+    偵測到樣式未載入（通常是路徑 / GitHub Pages 發佈資料夾 / 快取問題）。
+    請先開 <a href="./?update=999">?update=999</a>。
+    若仍不行：iOS「設定 → Safari → 進階 → 網站資料」刪除此站後重開。
   </div>
 
   <div class="app">
-    <!-- Header -->
     <header class="topbar">
       <div class="brand">
         <div class="logo">
@@ -61,10 +61,7 @@
       </button>
     </header>
 
-    <!-- Main -->
     <main class="main">
-
-      <!-- Section: Wardrobe -->
       <section id="secWardrobe" class="section active">
         <div class="card weatherCard">
           <div class="weatherHead">
@@ -78,6 +75,7 @@
                 </span>
                 <span id="cityText" class="muted">定位中…</span>
               </div>
+
               <div class="tempRow">
                 <div id="tempText" class="temp">--°C</div>
                 <div class="tempMeta">
@@ -87,9 +85,7 @@
               </div>
             </div>
 
-            <button id="btnLocate" class="btn primary">
-              定位/更新天氣
-            </button>
+            <button id="btnLocate" class="btn primary">定位/更新天氣</button>
           </div>
 
           <div id="weatherSkeleton" class="skeleton" style="display:none"></div>
@@ -118,11 +114,9 @@
         </div>
 
         <div id="wardrobeGrid" class="grid"></div>
-
         <div class="spacer"></div>
       </section>
 
-      <!-- Section: Outfit -->
       <section id="secOutfit" class="section">
         <div class="rowBetween">
           <h2 class="h2">自選穿搭</h2>
@@ -173,14 +167,13 @@
 
           <div class="composeBody">
             <canvas id="composeCanvas" width="900" height="1200" class="composeCanvas"></canvas>
-            <div class="muted small">提示：合成後可長按圖片另存（iOS 需開在 Safari 內）</div>
+            <div class="muted small">提示：合成後可長按圖片另存（iOS 建議 Safari 內）</div>
           </div>
         </div>
 
         <div class="spacer"></div>
       </section>
 
-      <!-- Section: Settings -->
       <section id="secSettings" class="section">
         <h2 class="h2">設定</h2>
 
@@ -222,39 +215,29 @@
 
         <div class="spacer"></div>
       </section>
-
     </main>
 
-    <!-- Bottom Nav -->
     <nav class="bottomNav">
       <button class="navBtn active" data-nav="wardrobe">
-        <span class="navIcon">👕</span>
-        <span class="navText">衣櫃</span>
+        <span class="navIcon">👕</span><span class="navText">衣櫃</span>
       </button>
       <button class="navBtn" data-nav="outfit">
-        <span class="navIcon">🧩</span>
-        <span class="navText">穿搭</span>
+        <span class="navIcon">🧩</span><span class="navText">穿搭</span>
       </button>
       <button class="navBtn" data-nav="settings">
-        <span class="navIcon">⚙️</span>
-        <span class="navText">設定</span>
+        <span class="navIcon">⚙️</span><span class="navText">設定</span>
       </button>
     </nav>
 
-    <!-- Floating + -->
     <button id="btnAdd" class="fab" title="新增單品">+</button>
-
-    <!-- Toast -->
     <div id="toast" class="toast"></div>
 
-    <!-- Modal: Item Editor -->
+    <!-- Item modal -->
     <div id="modalItem" class="modal hidden" aria-hidden="true">
       <div class="modalSheet">
         <div class="modalHead">
           <div class="modalTitle" id="itemModalTitle">新增單品</div>
-          <button class="iconBtn" data-close="modalItem" aria-label="關閉">
-            ✕
-          </button>
+          <button class="iconBtn" data-close="modalItem" aria-label="關閉">✕</button>
         </div>
 
         <div class="modalBody">
@@ -268,9 +251,7 @@
               <input id="itemFile" type="file" accept="image/*" class="file" />
               <button id="btnAIDescribe" class="btn ghost">AI 幫我判斷並說明</button>
             </div>
-            <div class="muted small">
-              圖片會自動縮圖壓縮後儲存，避免 iOS/瀏覽器快取或資料庫限制導致「看不到圖片」。
-            </div>
+            <div class="muted small">圖片會先縮圖壓縮後儲存，避免 iOS / IndexedDB 問題。</div>
           </div>
 
           <div class="field">
@@ -292,12 +273,12 @@
 
           <div class="field">
             <label class="label">備註</label>
-            <textarea id="itemNote" class="textarea" placeholder="示意：材質/顏色/版型/長度/場合/季節..."></textarea>
+            <textarea id="itemNote" class="textarea" placeholder="材質/顏色/版型/長度/場合/季節..."></textarea>
           </div>
 
           <div class="field">
             <label class="label">AI 生成描述（可編輯）</label>
-            <textarea id="itemAIDesc" class="textarea" placeholder="按上方「AI 幫我判斷並說明」會自動生成"></textarea>
+            <textarea id="itemAIDesc" class="textarea" placeholder="按上方按鈕會自動生成"></textarea>
           </div>
 
           <div class="rowGap">
@@ -309,7 +290,7 @@
       <div class="modalBackdrop" data-close="modalItem"></div>
     </div>
 
-    <!-- Modal: Picker -->
+    <!-- Picker modal -->
     <div id="modalPick" class="modal hidden" aria-hidden="true">
       <div class="modalSheet">
         <div class="modalHead">
@@ -323,10 +304,9 @@
       </div>
       <div class="modalBackdrop" data-close="modalPick"></div>
     </div>
-
   </div>
 
-  <script src="./db.js?v=7.2"></script>
-  <script src="./app.js?v=7.2"></script>
+  <script src="./db.js?v=7.3"></script>
+  <script src="./app.js?v=7.3"></script>
 </body>
 </html>
