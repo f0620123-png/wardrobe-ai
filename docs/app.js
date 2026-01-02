@@ -89,7 +89,7 @@
     if (!("serviceWorker" in navigator)) return;
 
     try {
-      const reg = await navigator.serviceWorker.register("./sw.js?v=7.2");
+      const reg = await navigator.serviceWorker.register("./sw.js?v=7.3");
       // 主動 update
       await reg.update().catch(() => {});
       // 若有 waiting，提示重整
