@@ -1,4 +1,3 @@
-/* docs/db.js - v7.2 */
 (() => {
   "use strict";
 
@@ -37,7 +36,6 @@
       const req = os.getAll();
       req.onsuccess = () => {
         const arr = req.result || [];
-        // sort by updatedAt desc
         arr.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
         resolve(arr);
         db.close();
@@ -76,11 +74,5 @@
     });
   }
 
-  // expose
-  window.WardrobeDB = {
-    getAllItems,
-    getItem,
-    putItem,
-    deleteItem,
-  };
+  window.WardrobeDB = { getAllItems, getItem, putItem, deleteItem };
 })();
