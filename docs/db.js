@@ -1,99 +1,106 @@
-/* docs/db.js
-   IndexedDB: items (store image as Blob)
-*/
+/* docs/db.js */
+(() => {
+  const DB_NAME = "wardrobe_ai_db";
+  const DB_VER = 2;
+  const STORE_ITEMS = "items";
 
-const DB_NAME = "wardrobe_db_v1";
-const DB_VER = 1;
-
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VER);
-
-    req.onupgradeneeded = () => {
-      const db = req.result;
-
-      if (!db.objectStoreNames.contains("items")) {
-        const store = db.createObjectStore("items", { keyPath: "id", autoIncrement: true });
-        store.createIndex("by_category", "category", { unique: false });
-        store.createIndex("by_createdAt", "createdAt", { unique: false });
-      }
-
-      if (!db.objectStoreNames.contains("outfits")) {
-        const store = db.createObjectStore("outfits", { keyPath: "id", autoIncrement: true });
-        store.createIndex("by_createdAt", "createdAt", { unique: false });
-      }
-    };
-
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function withStore(storeName, mode, fn) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, mode);
-    const store = tx.objectStore(storeName);
-
-    let result;
-    Promise.resolve()
-      .then(() => fn(store))
-      .then((r) => (result = r))
-      .catch(reject);
-
-    tx.oncomplete = () => resolve(result);
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
-}
-
-// ===== Items =====
-async function dbGetAllItems() {
-  return withStore("items", "readonly", (store) => {
+  function openDB() {
     return new Promise((resolve, reject) => {
-      const req = store.getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
-    });
-  });
-}
-
-async function dbGetItem(id) {
-  return withStore("items", "readonly", (store) => {
-    return new Promise((resolve, reject) => {
-      const req = store.get(Number(id));
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
-    });
-  });
-}
-
-async function dbPutItem(item) {
-  return withStore("items", "readwrite", (store) => {
-    return new Promise((resolve, reject) => {
-      const req = store.put(item);
+      const req = indexedDB.open(DB_NAME, DB_VER);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_ITEMS)) {
+          const store = db.createObjectStore(STORE_ITEMS, { keyPath: "id" });
+          store.createIndex("by_cat", "category", { unique: false });
+          store.createIndex("by_updated", "updatedAt", { unique: false });
+        }
+      };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
-  });
-}
+  }
 
-async function dbDeleteItem(id) {
-  return withStore("items", "readwrite", (store) => {
+  function tx(db, mode = "readonly") {
+    return db.transaction([STORE_ITEMS], mode).objectStore(STORE_ITEMS);
+  }
+
+  async function putItem(item) {
+    const db = await openDB();
     return new Promise((resolve, reject) => {
-      const req = store.delete(Number(id));
+      const store = tx(db, "readwrite");
+      const req = store.put(item);
+      req.onsuccess = () => resolve(item);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function getItem(id) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const store = tx(db, "readonly");
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function deleteItem(id) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const store = tx(db, "readwrite");
+      const req = store.delete(id);
       req.onsuccess = () => resolve(true);
       req.onerror = () => reject(req.error);
     });
-  });
-}
+  }
 
-async function dbClearItems() {
-  return withStore("items", "readwrite", (store) => {
+  async function listItems() {
+    const db = await openDB();
     return new Promise((resolve, reject) => {
-      const req = store.clear();
-      req.onsuccess = () => resolve(true);
+      const store = tx(db, "readonly");
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const arr = req.result || [];
+        arr.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        resolve(arr);
+      };
       req.onerror = () => reject(req.error);
     });
-  });
-}
+  }
+
+  // image utils
+  async function fileToJpegBlob(file, max = 1400, quality = 0.86) {
+    if (!(file instanceof File)) throw new Error("Invalid file");
+    const bmp = await createImageBitmap(file).catch(() => null);
+    if (!bmp) {
+      // fallback: keep original
+      return file;
+    }
+    const { width, height } = bmp;
+    const scale = Math.min(1, max / Math.max(width, height));
+    const w = Math.round(width * scale);
+    const h = Math.round(height * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bmp, 0, 0, w, h);
+
+    return await new Promise((resolve) => {
+      canvas.toBlob(
+        (blob) => resolve(blob || file),
+        "image/jpeg",
+        quality
+      );
+    });
+  }
+
+  window.WardrobeDB = {
+    putItem,
+    getItem,
+    deleteItem,
+    listItems,
+    fileToJpegBlob,
+  };
+})();
