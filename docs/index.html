@@ -1,298 +1,302 @@
 <!doctype html>
-<html lang="zh-Hant-TW">
+<html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#F6E9C8" />
-  <title>MIX & MATCH · Wardrobe AI</title>
+  <meta name="theme-color" content="#f5e6a7" />
+  <title>MIX & MATCH — Wardrobe AI</title>
 
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="icon-192.png" />
-  <link rel="stylesheet" href="style.css?v=20260102_1" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" sizes="192x192" href="./icon-192.png" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
 
-  <script defer src="db.js?v=20260102_1"></script>
-  <script defer src="app.js?v=20260102_1"></script>
+  <!-- 重要：相對路徑，才能在 /wardrobe-ai/ 子路徑正常 -->
+  <link rel="stylesheet" href="./style.css?v=1" />
 </head>
 
 <body>
-  <div class="app">
-    <!-- Top Bar -->
-    <header class="topbar">
-      <div class="topbarLeft">
-        <div class="appIcon" aria-hidden="true">
-          <!-- bookmark-like icon -->
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M6 3h12a1 1 0 0 1 1 1v18l-7-3-7 3V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6"/>
-          </svg>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brandIcon" aria-hidden="true">
+        <!-- 簡單 icon -->
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M12 3l8 6v12H4V9l8-6z" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M9 21V12h6v9" stroke="currentColor" stroke-width="1.8"/>
+        </svg>
+      </div>
+      <div class="brandText">
+        <div class="brandTitle">MIX & MATCH</div>
+        <div class="brandSub">Wardrobe AI</div>
+      </div>
+    </div>
+
+    <button id="btnRefresh" class="iconBtn" type="button" aria-label="更新">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <path d="M20 12a8 8 0 10-2.34 5.66" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        <path d="M20 4v6h-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+    </button>
+  </header>
+
+  <main class="container">
+    <!-- Weather card -->
+    <section class="card hero">
+      <div class="heroRow">
+        <div class="heroLeft">
+          <div class="heroLabel">
+            <span class="dot"></span>
+            <span>目前位置</span>
+          </div>
+          <div class="heroTemp">
+            <span id="tempText">--°C</span>
+            <div class="heroMeta">
+              <div id="feelsText">體感 --°C</div>
+              <div id="metaText">風 -- m/s · 降雨 -- mm · 來源 --</div>
+            </div>
+          </div>
         </div>
-        <div class="topbarTitle">
-          <div class="t1">MIX & MATCH</div>
-          <div class="t2">Wardrobe AI</div>
-        </div>
+
+        <button id="btnLocate" class="btnPrimary" type="button">定位/更新天氣</button>
       </div>
 
-      <button id="btnRefresh" class="iconBtn" title="更新" aria-label="更新">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-          <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-          <path d="M20 4v6h-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-    </header>
+      <div id="weatherSkeleton" class="skeleton" style="display:none;">
+        <div class="skLine w70"></div>
+        <div class="skLine w90"></div>
+        <div class="skLine w60"></div>
+      </div>
 
-    <!-- Main -->
-    <main class="main">
-      <!-- Wardrobe -->
-      <section id="pageWardrobe" class="page active">
-        <section class="card weatherCard">
-          <div class="weatherTop">
-            <div class="weatherLeft">
-              <div class="weatherLabel">
-                <span class="pinDot" aria-hidden="true"></span>
-                <span>目前位置</span>
-              </div>
+      <div class="hintBox" id="outfitHint">
+        <div class="hintTitle">今日體感：--</div>
+        <ul class="hintList"><li>點「定位/更新天氣」取得建議</li></ul>
+      </div>
+    </section>
 
-              <div class="weatherNums">
-                <div id="tempText" class="tempBig">--°C</div>
-                <div class="weatherMeta">
-                  <div id="feelsText" class="metaLine">體感 --°C</div>
-                  <div id="metaText" class="metaLine">風 -- m/s · 降雨 -- mm · 來源 --</div>
-                </div>
-              </div>
-            </div>
-
-            <button id="btnLocate" class="btnPrimary">定位/更新<br/>天氣</button>
-          </div>
-
-          <div id="weatherSkeleton" class="skeleton" style="display:none;">
-            <div class="skLine"></div>
-            <div class="skLine"></div>
-            <div class="skLine short"></div>
-          </div>
-
-          <div id="outfitHint" class="hintBox">
-            <div class="hintTitle">今日體感：--</div>
-            <ul class="hintList">
-              <li>請先定位取得天氣</li>
-            </ul>
-          </div>
-        </section>
-
-        <section class="sectionHead">
+    <!-- Tabs -->
+    <section class="tabsWrap">
+      <div id="pageWardrobe" class="page active">
+        <div class="sectionHead">
           <div class="hTitle">你的衣櫃</div>
           <div class="pillCount"><span id="countText">0</span> 件</div>
-        </section>
-
-        <section class="chipRow" id="filterRow">
-          <button class="chip active" data-filter="all">全部</button>
-          <button class="chip" data-filter="inner">內搭</button>
-          <button class="chip" data-filter="top">上衣</button>
-          <button class="chip" data-filter="bottom">下身</button>
-          <button class="chip" data-filter="outer">外套</button>
-          <button class="chip" data-filter="shoes">鞋子</button>
-          <button class="chip" data-filter="accessory">配件</button>
-        </section>
-
-        <section id="wardrobeGrid" class="grid"></section>
-        <div id="emptyWardrobe" class="empty" style="display:none;">
-          目前沒有單品。請按右下角「+」新增。
         </div>
-      </section>
 
-      <!-- Mix -->
-      <section id="pageMix" class="page">
-        <section class="mixHead">
-          <div class="mixTitle">自選穿搭</div>
-          <button id="btnMixClear" class="linkBtn">清空</button>
-        </section>
+        <div class="chipRow" id="filterRow">
+          <button class="chip active" data-filter="all" type="button">全部</button>
+          <button class="chip" data-filter="inner" type="button">內搭</button>
+          <button class="chip" data-filter="top" type="button">上衣</button>
+          <button class="chip" data-filter="bottom" type="button">下身</button>
+          <button class="chip" data-filter="outer" type="button">外套</button>
+          <button class="chip" data-filter="shoes" type="button">鞋子</button>
+          <button class="chip" data-filter="accessory" type="button">配件</button>
+        </div>
 
-        <section class="mixGrid">
-          <div class="mixSlot" data-slot="inner">
+        <div id="wardrobeGrid" class="grid"></div>
+
+        <div class="empty" id="wardrobeEmpty" style="display:none;">
+          <div class="emptyTitle">目前沒有單品</div>
+          <div class="emptySub">按右下角「+」新增第一件</div>
+        </div>
+      </div>
+
+      <div id="pageOutfit" class="page">
+        <div class="sectionHead">
+          <div class="hTitle">自選穿搭</div>
+          <button id="btnClearOutfit" class="btnGhost" type="button">清空</button>
+        </div>
+
+        <div class="outfitGrid">
+          <div class="slotCard">
             <div class="slotTitle">內搭</div>
-            <button class="slotBtn" data-pick="inner">選擇</button>
-            <div class="slotText" id="slotText_inner">未選擇</div>
+            <button class="btnOutline btnPick" data-slot="inner" type="button">選擇</button>
+            <div class="slotPicked" id="picked_inner">未選擇</div>
           </div>
-          <div class="mixSlot" data-slot="top">
+          <div class="slotCard">
             <div class="slotTitle">上衣</div>
-            <button class="slotBtn" data-pick="top">選擇</button>
-            <div class="slotText" id="slotText_top">未選擇</div>
+            <button class="btnOutline btnPick" data-slot="top" type="button">選擇</button>
+            <div class="slotPicked" id="picked_top">未選擇</div>
           </div>
-          <div class="mixSlot" data-slot="bottom">
+          <div class="slotCard">
             <div class="slotTitle">下身</div>
-            <button class="slotBtn" data-pick="bottom">選擇</button>
-            <div class="slotText" id="slotText_bottom">未選擇</div>
+            <button class="btnOutline btnPick" data-slot="bottom" type="button">選擇</button>
+            <div class="slotPicked" id="picked_bottom">未選擇</div>
           </div>
-          <div class="mixSlot" data-slot="outer">
+          <div class="slotCard">
             <div class="slotTitle">外套</div>
-            <button class="slotBtn" data-pick="outer">選擇</button>
-            <div class="slotText" id="slotText_outer">未選擇</div>
+            <button class="btnOutline btnPick" data-slot="outer" type="button">選擇</button>
+            <div class="slotPicked" id="picked_outer">未選擇</div>
           </div>
-          <div class="mixSlot" data-slot="shoes">
+          <div class="slotCard">
             <div class="slotTitle">鞋子</div>
-            <button class="slotBtn" data-pick="shoes">選擇</button>
-            <div class="slotText" id="slotText_shoes">未選擇</div>
+            <button class="btnOutline btnPick" data-slot="shoes" type="button">選擇</button>
+            <div class="slotPicked" id="picked_shoes">未選擇</div>
           </div>
-          <div class="mixSlot" data-slot="accessory">
+          <div class="slotCard">
             <div class="slotTitle">配件</div>
-            <button class="slotBtn" data-pick="accessory">選擇</button>
-            <div class="slotText" id="slotText_accessory">未選擇</div>
+            <button class="btnOutline btnPick" data-slot="accessory" type="button">選擇</button>
+            <div class="slotPicked" id="picked_accessory">未選擇</div>
           </div>
-        </section>
+        </div>
 
-        <section class="composeHead">
-          <div>
-            <div class="composeTitle">合成示意圖</div>
-            <div class="composeSub">先選內搭/上衣/下身/外套/鞋子/配件</div>
-          </div>
-          <button id="btnCompose" class="btnSmall">合成</button>
-        </section>
-
-        <section class="composeBox">
-          <div id="composePlaceholder" class="composePlaceholder">
-            合成示意圖會出現在這裡
-            <div class="composeHint">先選內搭/上衣/下身/外套/鞋子/配件</div>
-          </div>
-          <canvas id="composeCanvas" width="900" height="1200" style="display:none;"></canvas>
-        </section>
-
-        <div class="footNote">提示：合成後可長按圖片另存（iOS 建議 Safari 內）</div>
-      </section>
-
-      <!-- Settings -->
-      <section id="pageSettings" class="page">
-        <h2 class="settingsTitle">設定</h2>
-
-        <section class="card settingsCard">
-          <div class="settingsLabel">Worker Base</div>
-          <input id="workerBase" class="input" type="url" autocomplete="off" spellcheck="false"
-                 placeholder="https://xxxxx.workers.dev" />
-
-          <div class="settingsHelp">
-            用於天氣與 AI。預設已填入你的 Worker。
+        <div class="card composeCard">
+          <div class="composeHead">
+            <div>
+              <div class="composeTitle">合成示意圖</div>
+              <div class="composeSub">先選內搭/上衣/下身/外套/鞋子/配件</div>
+            </div>
+            <div class="composeBtns">
+              <button id="btnCompose" class="btnPrimary small" type="button">合成</button>
+              <button id="btnSaveCompose" class="btnOutline small" type="button">存成圖片</button>
+            </div>
           </div>
 
-          <div class="settingsBtns">
-            <button id="btnSaveWorker" class="btnPrimarySmall">儲存</button>
-            <button id="btnTestHealth" class="btnGhost">測試 /healthz</button>
+          <div class="composeCanvasWrap">
+            <canvas id="composeCanvas" width="900" height="1200"></canvas>
+            <div id="composeHint" class="composeHint">合成示意圖會出現在這裡</div>
           </div>
 
-          <div class="settingsLabel" style="margin-top:14px;">狀態</div>
-          <div id="healthStatus" class="statusBox">尚未測試</div>
-        </section>
+          <div class="tinyNote">提示：合成後可長按圖片另存（iOS 建議 Safari 內）</div>
+        </div>
+      </div>
 
-        <section class="card settingsCard">
-          <div class="settingsLabel">快取與更新</div>
-          <div class="settingsHelp">
-            若你遇到更新後畫面不對、或一直是舊版，請依序嘗試：<br/>
-            1. 按右上角「更新」<br/>
-            2. 開啟網址加上 <span class="mono">?update=999</span><br/>
-            3. iOS Safari 清除本網站資料後重開
+      <div id="pageSettings" class="page">
+        <div class="sectionHead">
+          <div class="hTitle">設定</div>
+        </div>
+
+        <div class="card">
+          <div class="fieldTitle">Worker Base</div>
+          <input id="workerBase" class="input" type="url" placeholder="https://xxxx.workers.dev" />
+          <div class="help">用於天氣與 AI。預設已填入你的 Worker。</div>
+
+          <div class="row">
+            <button id="btnSaveWorker" class="btnPrimary" type="button">儲存</button>
+            <button id="btnTestHealthz" class="btnOutline" type="button">測試 /healthz</button>
           </div>
 
-          <div class="settingsBtns">
-            <button id="btnShowUpdateTip" class="btnGhost">顯示強制更新提示</button>
-            <button id="btnClearCaches" class="btnDanger">清除本機快取（不刪衣櫃）</button>
-          </div>
-        </section>
-      </section>
-    </main>
+          <div class="fieldTitle" style="margin-top:14px;">狀態</div>
+          <div id="healthBox" class="statusBox">尚未測試</div>
+        </div>
 
-    <!-- Floating Action Button -->
-    <button id="fabAdd" class="fab" aria-label="新增單品" title="新增單品">
-      <span aria-hidden="true">+</span>
+        <div class="card">
+          <div class="fieldTitle">快取與更新</div>
+          <div class="help">
+            若你遇到更新後畫面不對、或一直是舊版，請依序嘗試：
+            <ol class="ol">
+              <li>按右上角「更新」按鈕</li>
+              <li>網址加上 <code>?update=999</code></li>
+              <li>按下方「清除本機快取」後重開</li>
+            </ol>
+          </div>
+
+          <div class="row">
+            <button id="btnShowUpdateTip" class="btnOutline" type="button">顯示強制更新提示</button>
+            <button id="btnClearCaches" class="btnDanger" type="button">清除本機快取（不刪衣櫃）</button>
+          </div>
+
+          <div class="tinyNote">衣櫃資料存於 IndexedDB，不會因清除快取而消失。</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- FAB（永遠 fixed + 高 z-index，避免被遮罩蓋住吃點擊） -->
+  <button id="fabAdd" class="fab" type="button" aria-label="新增單品">
+    <span class="fabPlus">+</span>
+  </button>
+
+  <!-- Bottom nav -->
+  <nav class="bottomNav">
+    <button class="navBtn active" data-tab="wardrobe" type="button" aria-label="衣櫃">
+      <span class="navIcon">👕</span><span class="navText">衣櫃</span>
     </button>
+    <button class="navBtn" data-tab="outfit" type="button" aria-label="穿搭">
+      <span class="navIcon">🧩</span><span class="navText">穿搭</span>
+    </button>
+    <button class="navBtn" data-tab="settings" type="button" aria-label="設定">
+      <span class="navIcon">⚙️</span><span class="navText">設定</span>
+    </button>
+  </nav>
 
-    <!-- Bottom Nav -->
-    <nav class="bottomNav">
-      <button class="navBtn active" data-nav="wardrobe">
-        <div class="navIcon">👕</div>
-        <div class="navText">衣櫃</div>
-      </button>
-      <button class="navBtn" data-nav="mix">
-        <div class="navIcon">🧩</div>
-        <div class="navText">穿搭</div>
-      </button>
-      <button class="navBtn" data-nav="settings">
-        <div class="navIcon">⚙️</div>
-        <div class="navText">設定</div>
-      </button>
-    </nav>
-  </div>
-
-  <!-- Modal: Add/Edit Item -->
-  <div id="modalMask" class="modalMask" style="display:none;"></div>
-  <div id="itemModal" class="modal" style="display:none;" role="dialog" aria-modal="true">
-    <div class="modalHeader">
-      <div id="modalTitle" class="modalTitle">新增單品</div>
-      <button id="btnCloseModal" class="iconBtn" aria-label="關閉">✕</button>
-    </div>
-
-    <div class="modalBody">
-      <div class="previewRow">
-        <div class="previewBox">
-          <img id="itemPreview" alt="單品預覽" />
-          <div id="previewPlaceholder" class="previewPlaceholder">No Image</div>
-        </div>
-
-        <div class="previewActions">
-          <label class="btnGhost fileBtn">
-            選擇圖片
-            <input id="itemImage" type="file" accept="image/*" />
-          </label>
-          <button id="btnRemoveImage" class="btnGhost">移除圖片</button>
-          <div id="aiState" class="aiState">AI：尚未分析</div>
-        </div>
+  <!-- Item modal -->
+  <div id="modalItem" class="modal" aria-hidden="true">
+    <div class="modalSheet">
+      <div class="modalHead">
+        <div class="modalTitle" id="modalTitle">新增單品</div>
+        <button id="btnCloseModal" class="iconBtn" type="button" aria-label="關閉">
+          ✕
+        </button>
       </div>
 
-      <label class="field">
-        <div class="fieldLabel">名稱（示意）</div>
-        <input id="itemName" class="input" type="text" placeholder="例如：黑色長版針織開襟外套" />
-      </label>
+      <div class="modalBody">
+        <div class="previewRow">
+          <div class="imgPreview" id="imgPreviewWrap">
+            <img id="imgPreview" alt="preview" />
+            <div class="imgPlaceholder" id="imgPlaceholder">尚未選擇圖片</div>
+          </div>
 
-      <div class="field">
-        <div class="fieldLabel">分類</div>
-        <div class="catGrid">
-          <button class="catBtn" data-cat="inner">內搭</button>
-          <button class="catBtn" data-cat="top">上衣</button>
-          <button class="catBtn" data-cat="bottom">下身</button>
-          <button class="catBtn" data-cat="outer">外套</button>
-          <button class="catBtn" data-cat="shoes">鞋子</button>
-          <button class="catBtn" data-cat="accessory">配件</button>
+          <div class="previewActions">
+            <label class="btnOutline small fileBtn">
+              選擇圖片
+              <input id="inputImage" type="file" accept="image/*" />
+            </label>
+
+            <button id="btnAIDescribe" class="btnGhost small" type="button">AI 生成描述</button>
+          </div>
         </div>
+
+        <div class="fieldTitle">名稱（示意）</div>
+        <input id="inputName" class="input" type="text" placeholder="例如：IMG_0415 / 黑色長版外套" />
+
+        <div class="fieldTitle">分類</div>
+        <div class="catRow" id="catRow">
+          <button class="catBtn" data-cat="inner" type="button">內搭</button>
+          <button class="catBtn" data-cat="top" type="button">上衣</button>
+          <button class="catBtn" data-cat="bottom" type="button">下身</button>
+          <button class="catBtn" data-cat="outer" type="button">外套</button>
+          <button class="catBtn" data-cat="shoes" type="button">鞋子</button>
+          <button class="catBtn" data-cat="accessory" type="button">配件</button>
+        </div>
+
+        <div class="fieldTitle">備註</div>
+        <textarea id="inputNote" class="textarea" rows="4" placeholder="示意：材質/顏色/版型/厚度/場合/季節..."></textarea>
+
+        <div class="fieldTitle">AI 生成描述（可編輯）</div>
+        <textarea id="inputAIDesc" class="textarea" rows="4" placeholder="按「AI 生成描述」會寫在這裡"></textarea>
       </div>
 
-      <label class="field">
-        <div class="fieldLabel">備註</div>
-        <textarea id="itemNote" class="textarea" rows="4"
-          placeholder="示意：材質/顏色/版型/厚度/場景..."></textarea>
-      </label>
-
-      <div class="field">
-        <div class="fieldLabel">AI 生成描述（可編輯）</div>
-        <textarea id="itemAiNote" class="textarea" rows="4"
-          placeholder="選擇圖片後會自動生成"></textarea>
-      </div>
-
-      <div class="modalFooter">
-        <button id="btnSaveItem" class="btnPrimaryWide">儲存</button>
-        <button id="btnDeleteItem" class="btnDangerWide">刪除</button>
+      <div class="modalFoot">
+        <button id="btnSaveItem" class="btnPrimary" type="button">儲存</button>
+        <button id="btnDeleteItem" class="btnDanger ghost" type="button" style="display:none;">刪除</button>
       </div>
     </div>
   </div>
 
-  <!-- Picker Modal (for Mix) -->
-  <div id="pickerMask" class="modalMask" style="display:none;"></div>
-  <div id="pickerModal" class="picker" style="display:none;" role="dialog" aria-modal="true">
-    <div class="modalHeader">
-      <div id="pickerTitle" class="modalTitle">選擇單品</div>
-      <button id="btnClosePicker" class="iconBtn" aria-label="關閉">✕</button>
-    </div>
-    <div class="modalBody">
-      <div id="pickerGrid" class="grid"></div>
-      <div id="pickerEmpty" class="empty" style="display:none;">目前沒有可選單品</div>
+  <!-- Picker modal -->
+  <div id="modalPicker" class="modal" aria-hidden="true">
+    <div class="modalSheet">
+      <div class="modalHead">
+        <div class="modalTitle" id="pickerTitle">選擇</div>
+        <button id="btnClosePicker" class="iconBtn" type="button" aria-label="關閉">✕</button>
+      </div>
+
+      <div class="modalBody">
+        <div id="pickerGrid" class="grid pickerGrid"></div>
+        <div class="empty" id="pickerEmpty" style="display:none;">
+          <div class="emptyTitle">沒有可選單品</div>
+          <div class="emptySub">先到「衣櫃」新增</div>
+        </div>
+      </div>
+
+      <div class="modalFoot">
+        <button id="btnPickerClear" class="btnOutline" type="button">清除該欄位</button>
+        <button id="btnPickerDone" class="btnPrimary" type="button">完成</button>
+      </div>
     </div>
   </div>
 
   <!-- Toast -->
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="./db.js?v=1"></script>
+  <script src="./app.js?v=1"></script>
 </body>
 </html>
