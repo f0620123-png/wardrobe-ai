@@ -1,29 +1,31 @@
 /* docs/app.js */
 
+const LS_WEATHER_KEY = "wardrobe.weather.cache.v2";
+const LS_WEATHER_TTL_MS = 10 * 60 * 1000; // 10 min
+const LS_WORKER_BASE = "wardrobe.worker.base.v1";
+
 const DEFAULT_WORKER_BASE = "https://autumn-cell-d032.f0620123.workers.dev";
 
-const LS_WORKER_BASE = "wardrobe.worker.base.v1";
-const LS_WEATHER_KEY = "wardrobe.weather.cache.v1";
-const LS_WEATHER_TTL_MS = 10 * 60 * 1000;
+let WORKER_BASE = DEFAULT_WORKER_BASE;
 
 let inflight = null; // AbortController for weather
-let state = {
-  filter: "all",
-  items: [],
-  editingId: null,
-  editingImageBlob: null,
-  editingCategory: null,
-  mix: {
-    inner: null,
-    top: null,
-    bottom: null,
-    outer: null,
-    shoes: null,
-    accessory: null,
-  },
+let allItems = [];
+let currentFilter = "all";
+
+let modalMode = "new"; // new | edit
+let editingId = null;
+let previewUrl = null;
+let editImageBlob = null;
+
+const mixState = {
+  inner: null,
+  top: null,
+  bottom: null,
+  outer: null,
+  shoes: null,
+  accessory: null,
 };
 
-// ---------- helpers ----------
 const $ = (sel) => document.querySelector(sel);
 
 function toast(msg, ms = 2200) {
@@ -35,20 +37,11 @@ function toast(msg, ms = 2200) {
   el._t = setTimeout(() => el.classList.remove("show"), ms);
 }
 
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function qs(name) {
+  try { return new URL(location.href).searchParams.get(name); } catch { return null; }
 }
 
-function getWorkerBase() {
-  return localStorage.getItem(LS_WORKER_BASE) || DEFAULT_WORKER_BASE;
-}
-
-function setLoadingWeather(isLoading) {
+function setLoading(isLoading) {
   const btn = $("#btnLocate");
   if (btn) {
     btn.disabled = isLoading;
@@ -58,292 +51,6 @@ function setLoadingWeather(isLoading) {
   if (sk) sk.style.display = isLoading ? "block" : "none";
 }
 
-// ---------- image processing ----------
-async function compressImageToBlob(file, maxSize = 1280, quality = 0.86) {
-  // iOS / Safari compatibility: use Image + canvas
-  const imgURL = URL.createObjectURL(file);
-  try {
-    const img = await new Promise((resolve, reject) => {
-      const im = new Image();
-      im.onload = () => resolve(im);
-      im.onerror = reject;
-      im.src = imgURL;
-    });
-
-    const { width, height } = img;
-    let tw = width, th = height;
-    if (Math.max(width, height) > maxSize) {
-      const ratio = maxSize / Math.max(width, height);
-      tw = Math.round(width * ratio);
-      th = Math.round(height * ratio);
-    }
-
-    const canvas = document.createElement("canvas");
-    canvas.width = tw;
-    canvas.height = th;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0, tw, th);
-
-    const blob = await new Promise((resolve) => {
-      canvas.toBlob(
-        (b) => resolve(b),
-        "image/jpeg",
-        quality
-      );
-    });
-
-    return blob || file;
-  } catch {
-    // fallback
-    return file;
-  } finally {
-    URL.revokeObjectURL(imgURL);
-  }
-}
-
-async function blobToDataURL(blob) {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result);
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(blob);
-  });
-}
-
-function showImagePreviewFromBlob(blob) {
-  const img = $("#itemImagePreview");
-  const ph = $("#imgPlaceholder");
-  if (!img || !ph) return;
-
-  if (!blob) {
-    img.style.display = "none";
-    img.removeAttribute("src");
-    ph.style.display = "flex";
-    return;
-  }
-
-  const url = URL.createObjectURL(blob);
-  img.onload = () => URL.revokeObjectURL(url);
-  img.src = url;
-  img.style.display = "block";
-  ph.style.display = "none";
-}
-
-// ---------- modal ----------
-function openModal() {
-  const m = $("#modalItem");
-  if (!m) return;
-  m.classList.add("show");
-  m.setAttribute("aria-hidden", "false");
-  document.body.style.overflow = "hidden";
-}
-
-function closeModal() {
-  const m = $("#modalItem");
-  if (!m) return;
-  m.classList.remove("show");
-  m.setAttribute("aria-hidden", "true");
-  document.body.style.overflow = "";
-  clearEditForm();
-}
-
-function openPicker() {
-  const m = $("#modalPicker");
-  if (!m) return;
-  m.classList.add("show");
-  m.setAttribute("aria-hidden", "false");
-  document.body.style.overflow = "hidden";
-}
-
-function closePicker() {
-  const m = $("#modalPicker");
-  if (!m) return;
-  m.classList.remove("show");
-  m.setAttribute("aria-hidden", "true");
-  document.body.style.overflow = "";
-}
-
-function setActiveCategory(cat) {
-  state.editingCategory = cat;
-  $$(".chip").forEach((b) => b.classList.toggle("active", b.dataset.cat === cat));
-  $("#catText").textContent = `目前：${catLabel(cat)}`;
-}
-
-function clearEditForm() {
-  state.editingId = null;
-  state.editingImageBlob = null;
-  state.editingCategory = null;
-
-  $("#modalTitle").textContent = "新增單品";
-  $("#btnDelete").style.display = "none";
-
-  $("#inpName").value = "";
-  $("#inpNote").value = "";
-  $("#inpAIDesc").value = "";
-  $("#inpImage").value = "";
-
-  $$(".chip").forEach((b) => b.classList.remove("active"));
-  $("#catText").textContent = "目前：未選";
-
-  showImagePreviewFromBlob(null);
-}
-
-function $$ (sel) {
-  return Array.from(document.querySelectorAll(sel));
-}
-
-// ---------- nav ----------
-function showView(name) {
-  const map = {
-    wardrobe: "#viewWardrobe",
-    mix: "#viewMix",
-    settings: "#viewSettings",
-  };
-  Object.values(map).forEach((id) => $(id).classList.remove("active"));
-  $(map[name]).classList.add("active");
-
-  $$(".navBtn").forEach((b) => b.classList.toggle("active", b.dataset.nav === name));
-}
-
-// ---------- data & render ----------
-function catLabel(cat) {
-  const m = {
-    top: "上衣",
-    bottom: "下身",
-    outer: "外套",
-    shoes: "鞋子",
-    accessory: "配件",
-    inner: "內搭",
-  };
-  return m[cat] || "未選";
-}
-
-function itemMatchesFilter(item, filter) {
-  if (filter === "all") return true;
-  return item.category === filter;
-}
-
-function renderWardrobe() {
-  const grid = $("#gridWardrobe");
-  const empty = $("#emptyWardrobe");
-  if (!grid || !empty) return;
-
-  const items = state.items
-    .filter((it) => itemMatchesFilter(it, state.filter))
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
-  empty.style.display = state.items.length === 0 ? "block" : "none";
-
-  grid.innerHTML = items.map((it) => {
-    const title = escapeHtml(it.name || `單品 #${it.id}`);
-    const sub = escapeHtml(it.aiDesc || it.note || "");
-    return `
-      <div class="card" data-id="${it.id}">
-        <div class="thumb" data-id="${it.id}">
-          <img data-img="${it.id}" alt="${title}" />
-          <div class="badge">${escapeHtml(catLabel(it.category))}</div>
-        </div>
-        <div class="cardBody">
-          <div class="cardTitle">${title}</div>
-          <div class="cardSub">${sub}</div>
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  // Attach images from Blob
-  for (const it of items) {
-    const img = grid.querySelector(`img[data-img="${it.id}"]`);
-    if (!img) continue;
-
-    if (it.imageBlob) {
-      const url = URL.createObjectURL(it.imageBlob);
-      img.onload = () => URL.revokeObjectURL(url);
-      img.src = url;
-    } else {
-      // fallback placeholder
-      img.removeAttribute("src");
-    }
-  }
-
-  // click handlers
-  grid.querySelectorAll(".card").forEach((card) => {
-    card.addEventListener("click", async () => {
-      const id = Number(card.dataset.id);
-      await openEditItem(id);
-    });
-  });
-}
-
-async function loadItems() {
-  state.items = await dbGetAllItems();
-  renderWardrobe();
-  renderMixSlotTexts();
-}
-
-async function openEditItem(id) {
-  const item = await dbGetItem(id);
-  if (!item) return;
-
-  clearEditForm();
-  state.editingId = item.id;
-  state.editingImageBlob = item.imageBlob || null;
-  state.editingCategory = item.category || null;
-
-  $("#modalTitle").textContent = "編輯單品";
-  $("#btnDelete").style.display = "inline-flex";
-
-  $("#inpName").value = item.name || "";
-  $("#inpNote").value = item.note || "";
-  $("#inpAIDesc").value = item.aiDesc || "";
-
-  if (item.category) setActiveCategory(item.category);
-  showImagePreviewFromBlob(item.imageBlob || null);
-
-  openModal();
-}
-
-async function saveItem() {
-  const name = $("#inpName").value.trim();
-  const note = $("#inpNote").value.trim();
-  const aiDesc = $("#inpAIDesc").value.trim();
-
-  const category = state.editingCategory;
-  if (!category) {
-    toast("請先選擇分類（上衣/下身/外套/鞋子/配件）");
-    return;
-  }
-
-  const now = Date.now();
-  const existing = state.editingId ? await dbGetItem(state.editingId) : null;
-
-  const item = {
-    id: existing?.id,
-    name: name || existing?.name || "",
-    category,
-    note,
-    aiDesc,
-    imageBlob: state.editingImageBlob || existing?.imageBlob || null,
-    createdAt: existing?.createdAt || now,
-    updatedAt: now,
-  };
-
-  await dbPutItem(item);
-  toast("已儲存");
-  closeModal();
-  await loadItems();
-}
-
-async function deleteItem() {
-  if (!state.editingId) return;
-  if (!confirm("確定要刪除這件單品嗎？")) return;
-  await dbDeleteItem(state.editingId);
-  toast("已刪除");
-  closeModal();
-  await loadItems();
-}
-
-// ---------- weather ----------
 function readWeatherCache() {
   try {
     const raw = localStorage.getItem(LS_WEATHER_KEY);
@@ -362,6 +69,199 @@ function writeWeatherCache(data) {
   } catch {}
 }
 
+function setText(sel, text) {
+  const el = $(sel);
+  if (el) el.textContent = text;
+}
+function setHtml(sel, html) {
+  const el = $(sel);
+  if (el) el.innerHTML = html;
+}
+
+function catLabel(cat) {
+  return (
+    { top: "上衣", bottom: "下身", outer: "外套", shoes: "鞋子", accessory: "配件", inner: "內搭" }[cat] || "未分類"
+  );
+}
+
+function openModal(id = null) {
+  const m = $("#itemModal");
+  if (!m) return;
+  m.classList.add("show");
+  m.setAttribute("aria-hidden", "false");
+
+  $("#aiBox").style.display = "none";
+  $("#aiOut").innerHTML = "";
+
+  if (id) {
+    modalMode = "edit";
+    editingId = id;
+    $("#modalTitle").textContent = "編輯單品";
+    $("#btnDeleteItem").style.display = "inline-flex";
+    loadItemIntoModal(id);
+  } else {
+    modalMode = "new";
+    editingId = null;
+    $("#modalTitle").textContent = "新增單品";
+    $("#btnDeleteItem").style.display = "none";
+    resetModalFields();
+  }
+}
+
+function closeModal() {
+  const m = $("#itemModal");
+  if (!m) return;
+  m.classList.remove("show");
+  m.setAttribute("aria-hidden", "true");
+  resetModalFields();
+}
+
+function resetModalFields() {
+  $("#itemName").value = "";
+  $("#itemNote").value = "";
+  setCategorySeg("top");
+
+  editImageBlob = null;
+  const img = $("#itemPreview");
+  const empty = $("#previewEmpty");
+  img.style.display = "none";
+  empty.style.display = "block";
+
+  if (previewUrl) {
+    URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+  }
+  $("#fileInput").value = "";
+}
+
+function setCategorySeg(cat) {
+  const btns = [...document.querySelectorAll("#catSeg .segBtn")];
+  btns.forEach((b) => b.classList.toggle("active", b.dataset.cat === cat));
+  $("#catSeg").dataset.value = cat;
+}
+function getCategorySeg() {
+  return $("#catSeg").dataset.value || "top";
+}
+
+async function loadItemIntoModal(id) {
+  const item = await window.WardrobeDB.getItem(id);
+  if (!item) {
+    toast("找不到該單品");
+    closeModal();
+    return;
+  }
+
+  $("#itemName").value = item.name || "";
+  $("#itemNote").value = item.note || "";
+  setCategorySeg(item.category || "top");
+  editImageBlob = item.imageBlob || null;
+
+  renderPreviewFromBlob(editImageBlob);
+}
+
+function renderPreviewFromBlob(blob) {
+  const img = $("#itemPreview");
+  const empty = $("#previewEmpty");
+
+  if (previewUrl) {
+    URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+  }
+
+  if (!blob) {
+    img.style.display = "none";
+    empty.style.display = "block";
+    return;
+  }
+
+  previewUrl = URL.createObjectURL(blob);
+  img.src = previewUrl;
+  img.onload = () => {
+    img.style.display = "block";
+    empty.style.display = "none";
+  };
+}
+
+function openPickModal(slotKey) {
+  const m = $("#pickModal");
+  if (!m) return;
+  m.classList.add("show");
+  m.setAttribute("aria-hidden", "false");
+
+  const title = $("#pickTitle");
+  title.textContent = `選擇${catLabel(slotKey)}`;
+
+  // map slot to category
+  const catMap = {
+    inner: "top", // 先用上衣當內搭來源（你後面可另做「內搭」分類）
+    top: "top",
+    bottom: "bottom",
+    outer: "outer",
+    shoes: "shoes",
+    accessory: "accessory",
+  };
+  const wantCat = catMap[slotKey];
+
+  const list = allItems.filter((x) => x.category === wantCat);
+  const grid = $("#pickGrid");
+  grid.innerHTML = "";
+
+  if (!list.length) {
+    grid.innerHTML = `<div class="hintEmpty">這個分類目前沒有單品，先去衣櫃新增。</div>`;
+    return;
+  }
+
+  for (const it of list) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="thumb"><div class="noimg">載入中…</div></div>
+      <div class="cardBody">
+        <div class="cardTitle">${escapeHtml(it.name || "未命名")}</div>
+        <div class="cardMeta"><span class="badge">${catLabel(it.category)}</span></div>
+      </div>
+    `;
+    card.addEventListener("click", async () => {
+      mixState[slotKey] = it.id;
+      $("#slot-" + slotKey).textContent = it.name || "已選";
+      closePickModal();
+      toast("已選擇：" + (it.name || "單品"), 1200);
+    });
+    grid.appendChild(card);
+
+    // thumb
+    const thumb = card.querySelector(".thumb");
+    const blob = it.imageBlob || null;
+    if (!blob) {
+      thumb.innerHTML = `<div class="noimg">無圖片</div>`;
+    } else {
+      const url = URL.createObjectURL(blob);
+      thumb.innerHTML = `<img alt="thumb">`;
+      const img = thumb.querySelector("img");
+      img.src = url;
+      img.onload = () => URL.revokeObjectURL(url);
+      img.onerror = () => URL.revokeObjectURL(url);
+    }
+  }
+}
+
+function closePickModal() {
+  const m = $("#pickModal");
+  if (!m) return;
+  m.classList.remove("show");
+  m.setAttribute("aria-hidden", "true");
+}
+
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+/* ---------- weather ---------- */
 function getCurrentPosition(opts = {}) {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error("此裝置不支援定位"));
@@ -378,8 +278,7 @@ async function fetchWeather(lat, lon) {
   if (inflight) inflight.abort();
   inflight = new AbortController();
 
-  const base = getWorkerBase();
-  const url = `${base}/weather/now?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
+  const url = `${WORKER_BASE}/weather/now?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
 
   const res = await fetch(url, {
     method: "GET",
@@ -389,6 +288,7 @@ async function fetchWeather(lat, lon) {
   });
 
   const jsonData = await res.json().catch(() => null);
+
   if (!res.ok || !jsonData || jsonData.ok !== true) {
     const msg = jsonData?.error || `Weather API error (${res.status})`;
     throw new Error(msg);
@@ -406,7 +306,7 @@ function recommendOutfit(feelsC, precipMm, windMs) {
 
   if (f <= 10) {
     level = "寒冷";
-    parts.push("保暖內層（發熱衣/長袖）", "厚外套（羽絨/羊毛）", "長褲", "可加圍巾");
+    parts.push("保暖內層（發熱衣/長袖）", "厚外套（羽絨/羊毛）", "長褲", "可加圍巾/帽");
   } else if (f <= 16) {
     level = "偏涼";
     parts.push("長袖或薄針織", "輕外套（風衣/牛仔/薄羽絨）", "長褲");
@@ -418,7 +318,7 @@ function recommendOutfit(feelsC, precipMm, windMs) {
     parts.push("短袖", "透氣材質（棉/麻/機能排汗）", "短褲/薄長褲");
   } else {
     level = "炎熱";
-    parts.push("無袖/短袖", "輕薄透氣", "防曬（帽/袖套/防曬外套）");
+    parts.push("無袖/短袖", "輕薄透氣", "防曬（帽/袖套/薄外套）");
   }
 
   if (Number.isFinite(w) && w >= 6) parts.push("風大：外層選防風材質");
@@ -434,25 +334,32 @@ function renderWeather(w) {
   const rain = w.precipitation;
   const unit = w.unit || "C";
 
-  $("#tempText").textContent = `${temp}°${unit}`;
-  $("#feelsText").textContent = `體感 ${feels}°${unit}`;
-  $("#metaText").textContent = `風 ${wind} m/s · 降雨 ${rain} mm · 來源 ${w.provider}`;
+  setText("#tempText", `${temp}°${unit}`);
+  setText("#feelsText", `體感 ${feels}°${unit}`);
+  setText("#metaText", `風 ${wind} m/s · 降雨 ${rain} mm · 來源 ${w.provider}`);
 
   const rec = recommendOutfit(feels, rain, wind);
-  $("#outfitHint").innerHTML = `
-    <div class="hintTitle">今日體感：${escapeHtml(rec.level)}</div>
-    <ul class="hintList">
-      ${rec.parts.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}
-    </ul>
-  `;
+  setHtml(
+    "#outfitHint",
+    `
+      <div class="hintTitle">今日體感：${rec.level}</div>
+      <ul class="hintList">
+        ${rec.parts.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}
+      </ul>
+    `
+  );
 }
 
 async function refreshByGPS() {
   try {
-    setLoadingWeather(true);
+    setLoading(true);
 
     const cached = readWeatherCache();
-    if (cached) renderWeather(cached);
+    if (cached) {
+      renderWeather(cached);
+      setLoading(false);
+      toast("已顯示快取天氣，背景更新中…", 1400);
+    }
 
     const pos = await getCurrentPosition();
     const { latitude, longitude } = pos.coords;
@@ -465,490 +372,524 @@ async function refreshByGPS() {
   } catch (e) {
     toast(`更新失敗：${String(e?.message || e)}`);
   } finally {
-    setLoadingWeather(false);
+    setLoading(false);
   }
 }
 
-// ---------- AI ----------
+/* ---------- AI analyze (optional) ---------- */
+async function blobToBase64(blob) {
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
 async function aiAnalyzeImage() {
   try {
-    if (!state.editingImageBlob) {
-      toast("請先選擇圖片");
-      return;
-    }
-    const base = getWorkerBase();
-    const url = `${base}/ai/wardrobe/analyze-image`;
+    if (!editImageBlob) return toast("先選擇圖片");
+    $("#aiBox").style.display = "none";
+    $("#aiOut").innerHTML = "";
 
     toast("AI 分析中…", 1200);
 
-    const dataUrl = await blobToDataURL(state.editingImageBlob);
-    // dataUrl: "data:image/jpeg;base64,...."
-    const base64 = String(dataUrl).split(",")[1] || "";
-
-    const res = await fetch(url, {
+    const b64 = await blobToBase64(editImageBlob);
+    const res = await fetch(`${WORKER_BASE}/ai/wardrobe/analyze-image`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        image_base64: base64,
-        lang: "zh-Hant",
-        // 你也可傳 user_hint 增加準確度
-        user_hint: "請判斷顏色/材質/版型/長度/場合/季節，並生成一段自然中文描述。",
+        image_base64: b64,
+        // 你也可以把目前已填文字傳上去，讓 AI 更準
+        text_hint: `${$("#itemName").value || ""} ${$("#itemNote").value || ""}`.trim(),
+        locale: "zh-TW",
       }),
     });
 
-    const json = await res.json().catch(() => null);
-    if (!res.ok || !json || json.ok !== true) {
-      const msg = json?.error || `AI error (${res.status})`;
-      throw new Error(msg);
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.ok !== true) {
+      throw new Error(data?.error || `AI error (${res.status})`);
     }
 
-    // 容錯解析：支援不同 worker 回傳欄位
-    const result = json.result || json.data || json.output || json;
+    // 期望回傳：
+    // data.description: 一段完整描述
+    // data.fields: { color, material, fit, length, occasion, season, category? }
+    const desc = data.description || "";
+    const fields = data.fields || {};
 
-    // 你可以在 worker 統一成：{ ok:true, result:{ category, name, note, description } }
-    const desc = result.description || result.aiDesc || result.text || "";
-    const note = result.note || result.tags || "";
-    const cat = result.category || null;
-    const name = result.name || "";
+    // 類別若有回來就套用
+    if (fields.category && ["top","bottom","outer","shoes","accessory"].includes(fields.category)) {
+      setCategorySeg(fields.category);
+    }
 
-    if (name && !$("#inpName").value.trim()) $("#inpName").value = name;
-    if (desc) $("#inpAIDesc").value = desc;
-    if (note && !$("#inpNote").value.trim()) $("#inpNote").value = String(note);
+    // 備註自動補上（不覆蓋使用者已輸入的內容；改成 append）
+    const note = $("#itemNote").value || "";
+    const lines = [];
+    if (fields.color) lines.push(`顏色：${fields.color}`);
+    if (fields.material) lines.push(`材質：${fields.material}`);
+    if (fields.fit) lines.push(`版型：${fields.fit}`);
+    if (fields.length) lines.push(`長度：${fields.length}`);
+    if (fields.occasion) lines.push(`場合：${fields.occasion}`);
+    if (fields.season) lines.push(`季節：${fields.season}`);
 
-    if (cat && !state.editingCategory) setActiveCategory(cat);
+    const toAppend = lines.length ? lines.join(" / ") : "";
+    if (toAppend && !note.includes(toAppend)) {
+      $("#itemNote").value = note ? (note + "\n" + toAppend) : toAppend;
+    }
 
-    toast("AI 已填入建議（可再修改）");
+    $("#aiOut").innerHTML = `
+      <div style="font-weight:900;margin-bottom:6px;">AI 描述</div>
+      <div style="line-height:1.6;margin-bottom:10px;">${escapeHtml(desc)}</div>
+      <div style="font-weight:900;margin-bottom:6px;">解析欄位</div>
+      <div style="line-height:1.6;">
+        ${Object.entries(fields).map(([k,v]) => `<div><b>${escapeHtml(k)}</b>：${escapeHtml(v)}</div>`).join("")}
+      </div>
+    `;
+    $("#aiBox").style.display = "block";
+
+    toast("AI 分析完成");
   } catch (e) {
     toast(`AI 失敗：${String(e?.message || e)}`);
   }
 }
 
-async function aiAutofillByText() {
-  try {
-    const text = [
-      $("#inpName").value.trim(),
-      $("#inpNote").value.trim(),
-      $("#inpAIDesc").value.trim(),
-    ].filter(Boolean).join("，");
+/* ---------- Closet render ---------- */
+async function loadAndRender() {
+  allItems = await window.WardrobeDB.listItems();
+  renderCloset();
+  syncMixSlotLabels();
+}
 
-    if (!text) {
-      toast("請先輸入一些文字，例如：橄欖綠 短袖 棉質 寬鬆 日常");
-      return;
-    }
+function renderCloset() {
+  const grid = $("#closetGrid");
+  grid.innerHTML = "";
 
-    const base = getWorkerBase();
-    const url = `${base}/ai/wardrobe/autofill`;
+  const list = allItems.filter((it) => currentFilter === "all" ? true : it.category === currentFilter);
 
-    toast("AI 補完中…", 1200);
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, lang: "zh-Hant" }),
-    });
-
-    const json = await res.json().catch(() => null);
-    if (!res.ok || !json || json.ok !== true) {
-      const msg = json?.error || `AI error (${res.status})`;
-      throw new Error(msg);
-    }
-
-    const result = json.result || json.data || json.output || json;
-    const desc = result.description || result.aiDesc || result.text || "";
-    const note = result.note || result.tags || "";
-    const cat = result.category || null;
-    const name = result.name || "";
-
-    if (name && !$("#inpName").value.trim()) $("#inpName").value = name;
-    if (desc) $("#inpAIDesc").value = desc;
-    if (note && !$("#inpNote").value.trim()) $("#inpNote").value = String(note);
-    if (cat && !state.editingCategory) setActiveCategory(cat);
-
-    toast("AI 已補完（可再修改）");
-  } catch (e) {
-    toast(`AI 失敗：${String(e?.message || e)}`);
+  if (!list.length) {
+    grid.innerHTML = `<div class="hintEmpty">目前沒有單品。點右下角「＋」新增。</div>`;
+    return;
   }
-}
 
-// ---------- Mix / Picker ----------
-function renderMixSlotTexts() {
-  $("#slotInner").textContent = state.mix.inner?.name || "未選";
-  $("#slotTop").textContent = state.mix.top?.name || "未選";
-  $("#slotBottom").textContent = state.mix.bottom?.name || "未選";
-  $("#slotOuter").textContent = state.mix.outer?.name || "未選";
-  $("#slotShoes").textContent = state.mix.shoes?.name || "未選";
-  $("#slotAccessory").textContent = state.mix.accessory?.name || "未選";
-}
+  for (const it of list) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.addEventListener("click", () => openModal(it.id));
 
-function slotToCategory(slot) {
-  // 內搭也可用上衣資料，先用 top 類
-  if (slot === "inner") return "top";
-  return slot;
-}
-
-function openPickerForSlot(slot) {
-  const category = slotToCategory(slot);
-  $("#pickerTitle").textContent = `選擇${catLabel(slot)}`;
-  $("#pickerHint").textContent = `類別：${catLabel(category)}`;
-
-  const items = state.items
-    .filter((it) => it.category === category)
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
-  const grid = $("#pickerGrid");
-  grid.innerHTML = items.map((it) => {
-    const title = escapeHtml(it.name || `單品 #${it.id}`);
-    return `
-      <div class="card" data-pick-id="${it.id}">
-        <div class="thumb">
-          <img data-pick-img="${it.id}" alt="${title}" />
-          <div class="badge">${escapeHtml(catLabel(it.category))}</div>
-        </div>
-        <div class="cardBody">
-          <div class="cardTitle">${title}</div>
-          <div class="cardSub">${escapeHtml(it.aiDesc || it.note || "")}</div>
+    card.innerHTML = `
+      <div class="thumb"><div class="noimg">載入中…</div></div>
+      <div class="cardBody">
+        <div class="cardTitle">${escapeHtml(it.name || "未命名")}</div>
+        <div class="cardMeta">
+          <span class="badge">${catLabel(it.category)}</span>
         </div>
       </div>
     `;
-  }).join("");
 
-  for (const it of items) {
-    const img = grid.querySelector(`img[data-pick-img="${it.id}"]`);
-    if (!img) continue;
-    if (it.imageBlob) {
-      const url = URL.createObjectURL(it.imageBlob);
-      img.onload = () => URL.revokeObjectURL(url);
+    grid.appendChild(card);
+
+    const thumb = card.querySelector(".thumb");
+    const blob = it.imageBlob || null;
+    if (!blob) {
+      thumb.innerHTML = `<div class="noimg">無圖片</div>`;
+    } else {
+      const url = URL.createObjectURL(blob);
+      thumb.innerHTML = `<img alt="thumb">`;
+      const img = thumb.querySelector("img");
       img.src = url;
+      img.onload = () => URL.revokeObjectURL(url);
+      img.onerror = () => URL.revokeObjectURL(url);
     }
   }
-
-  grid.querySelectorAll("[data-pick-id]").forEach((card) => {
-    card.addEventListener("click", () => {
-      const id = Number(card.dataset.pickId);
-      const chosen = state.items.find((x) => x.id === id);
-      state.mix[slot] = chosen || null;
-      renderMixSlotTexts();
-      closePicker();
-    });
-  });
-
-  $("#btnPickNone").onclick = () => {
-    state.mix[slot] = null;
-    renderMixSlotTexts();
-    closePicker();
-  };
-
-  openPicker();
 }
 
-async function composeMixCanvas() {
-  const canvas = $("#mixCanvas");
+/* ---------- Save / Delete ---------- */
+async function saveItem() {
+  try {
+    const name = $("#itemName").value.trim() || "未命名";
+    const category = getCategorySeg();
+    const note = $("#itemNote").value.trim();
+
+    if (!editImageBlob && modalMode === "new") {
+      // 允許無圖，但提醒
+      toast("提醒：你還沒選圖片（可先存）", 1500);
+    }
+
+    const now = Date.now();
+    const id = modalMode === "edit" ? editingId : `it_${now}_${Math.random().toString(16).slice(2)}`;
+
+    const prev = modalMode === "edit" ? (await window.WardrobeDB.getItem(id)) : null;
+
+    const item = {
+      id,
+      name,
+      category,
+      note,
+      imageBlob: editImageBlob || prev?.imageBlob || null,
+      createdAt: prev?.createdAt || now,
+      updatedAt: now,
+    };
+
+    await window.WardrobeDB.putItem(item);
+
+    toast("已儲存");
+    closeModal();
+    await loadAndRender();
+  } catch (e) {
+    toast(`儲存失敗：${String(e?.message || e)}`);
+  }
+}
+
+async function removeItem() {
+  if (!editingId) return;
+  if (!confirm("確定要刪除此單品？")) return;
+  try {
+    await window.WardrobeDB.deleteItem(editingId);
+
+    // 若該單品被選入穿搭，也順便清掉
+    for (const k of Object.keys(mixState)) {
+      if (mixState[k] === editingId) mixState[k] = null;
+    }
+
+    toast("已刪除");
+    closeModal();
+    await loadAndRender();
+  } catch (e) {
+    toast(`刪除失敗：${String(e?.message || e)}`);
+  }
+}
+
+/* ---------- Mix compose ---------- */
+function syncMixSlotLabels() {
+  for (const k of Object.keys(mixState)) {
+    const id = mixState[k];
+    const el = $("#slot-" + k);
+    if (!el) continue;
+    if (!id) { el.textContent = "未選"; continue; }
+    const it = allItems.find((x) => x.id === id);
+    el.textContent = it?.name || "已選";
+  }
+}
+
+async function drawCompose() {
+  const canvas = $("#composeCanvas");
   const ctx = canvas.getContext("2d");
 
   // background
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
 
-  // title area
+  // title
   ctx.fillStyle = "#111111";
-  ctx.font = "bold 42px system-ui, -apple-system";
-  ctx.fillText("今日穿搭示意", 42, 78);
+  ctx.font = "bold 40px system-ui";
+  ctx.fillText("MIX & MATCH · Outfit", 36, 64);
 
-  ctx.fillStyle = "#666";
-  ctx.font = "bold 22px system-ui, -apple-system";
-  ctx.fillText(new Date().toLocaleString("zh-Hant"), 42, 112);
-
-  const slots = [
-    ["內搭", state.mix.inner],
-    ["上衣", state.mix.top],
-    ["下身", state.mix.bottom],
-    ["外套", state.mix.outer],
-    ["鞋子", state.mix.shoes],
-    ["配件", state.mix.accessory],
-  ];
+  // weather small
+  const cached = readWeatherCache();
+  if (cached) {
+    ctx.font = "600 22px system-ui";
+    ctx.fillStyle = "#555";
+    ctx.fillText(
+      `體感 ${cached.feels_like}°${cached.unit || "C"} · 風 ${cached.wind_speed} m/s · 雨 ${cached.precipitation} mm`,
+      36, 104
+    );
+  }
 
   // layout 2 columns
-  const padding = 42;
-  const gap = 24;
-  const colW = (canvas.width - padding * 2 - gap) / 2;
-  const rowH = 360;
-  const topY = 150;
+  const slots = [
+    ["inner","內搭"],
+    ["top","上衣"],
+    ["bottom","下身"],
+    ["outer","外套"],
+    ["shoes","鞋子"],
+    ["accessory","配件"],
+  ];
 
-  // draw cards
-  for (let i = 0; i < slots.length; i++) {
-    const col = i % 2;
-    const row = Math.floor(i / 2);
+  const boxW = (canvas.width - 36*2 - 18) / 2;
+  const boxH = (canvas.height - 140 - 36 - 18*2) / 3;
 
-    const x = padding + col * (colW + gap);
-    const y = topY + row * (rowH + gap);
+  let i = 0;
+  for (let r=0; r<3; r++){
+    for (let c=0; c<2; c++){
+      const x = 36 + c*(boxW+18);
+      const y = 140 + r*(boxH+18);
 
-    // card bg
-    ctx.fillStyle = "#faf7f1";
-    roundRect(ctx, x, y, colW, rowH, 26, true, false);
+      // frame
+      ctx.fillStyle = "#FAFAFA";
+      ctx.strokeStyle = "rgba(0,0,0,.12)";
+      roundRect(ctx, x, y, boxW, boxH, 22, true, true);
 
-    // label
-    ctx.fillStyle = "#111";
-    ctx.font = "bold 28px system-ui, -apple-system";
-    ctx.fillText(slots[i][0], x + 22, y + 44);
+      const [key,label] = slots[i++];
+      ctx.fillStyle = "#333";
+      ctx.font = "bold 22px system-ui";
+      ctx.fillText(label, x+18, y+34);
 
-    const item = slots[i][1];
-    if (!item) {
-      ctx.fillStyle = "#999";
-      ctx.font = "bold 22px system-ui, -apple-system";
-      ctx.fillText("未選擇", x + 22, y + 88);
-      continue;
-    }
+      const id = mixState[key];
+      const it = id ? allItems.find((z)=>z.id===id) : null;
 
-    ctx.fillStyle = "#333";
-    ctx.font = "bold 22px system-ui, -apple-system";
-    ctx.fillText(truncate(item.name || `#${item.id}`, 18), x + 22, y + 88);
+      if (!it || !it.imageBlob) {
+        ctx.fillStyle = "#999";
+        ctx.font = "700 18px system-ui";
+        ctx.fillText("未選擇", x+18, y+70);
+        continue;
+      }
 
-    // draw image
-    if (item.imageBlob) {
-      const img = await blobToImage(item.imageBlob);
-      const imgBoxX = x + 22;
-      const imgBoxY = y + 110;
-      const imgBoxW = colW - 44;
-      const imgBoxH = rowH - 140;
+      // draw image
+      const img = await blobToImage(it.imageBlob);
+      const imgAreaX = x + 14;
+      const imgAreaY = y + 56;
+      const imgAreaW = boxW - 28;
+      const imgAreaH = boxH - 70;
 
-      // cover draw
-      drawCover(ctx, img, imgBoxX, imgBoxY, imgBoxW, imgBoxH, 20);
+      drawContain(ctx, img, imgAreaX, imgAreaY, imgAreaW, imgAreaH);
+
+      // name
+      ctx.fillStyle = "#444";
+      ctx.font = "700 16px system-ui";
+      ctx.fillText(trunc(it.name || "", 22), x+18, y+boxH-16);
     }
   }
 
-  toast("已合成示意圖（可截圖保存）");
-}
-
-function truncate(s, n) {
-  const t = String(s ?? "");
-  return t.length <= n ? t : t.slice(0, n - 1) + "…";
+  toast("合成完成（可匯出 PNG）", 1400);
 }
 
 function roundRect(ctx, x, y, w, h, r, fill, stroke) {
-  const radius = Math.min(r, w / 2, h / 2);
+  const rr = Math.min(r, w/2, h/2);
   ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + w, y, x + w, y + h, radius);
-  ctx.arcTo(x + w, y + h, x, y + h, radius);
-  ctx.arcTo(x, y + h, x, y, radius);
-  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.moveTo(x+rr, y);
+  ctx.arcTo(x+w, y, x+w, y+h, rr);
+  ctx.arcTo(x+w, y+h, x, y+h, rr);
+  ctx.arcTo(x, y+h, x, y, rr);
+  ctx.arcTo(x, y, x+w, y, rr);
   ctx.closePath();
   if (fill) ctx.fill();
   if (stroke) ctx.stroke();
 }
 
-async function blobToImage(blob) {
-  const url = URL.createObjectURL(blob);
-  try {
-    const img = await new Promise((resolve, reject) => {
-      const im = new Image();
-      im.onload = () => resolve(im);
-      im.onerror = reject;
-      im.src = url;
-    });
-    return img;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+function trunc(s, n) {
+  s = String(s || "");
+  return s.length > n ? s.slice(0, n-1) + "…" : s;
 }
 
-function drawCover(ctx, img, x, y, w, h, r = 0) {
-  // clip rounded rect
-  ctx.save();
-  if (r > 0) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-    ctx.clip();
-  }
-
-  const iw = img.width;
-  const ih = img.height;
-  const scale = Math.max(w / iw, h / ih);
-  const sw = w / scale;
-  const sh = h / scale;
-  const sx = (iw - sw) / 2;
-  const sy = (ih - sh) / 2;
-
-  ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
-  ctx.restore();
-
-  // border
-  ctx.strokeStyle = "rgba(0,0,0,.08)";
-  ctx.lineWidth = 2;
-  roundRect(ctx, x, y, w, h, r, false, true);
+function blobToImage(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+    img.src = url;
+  });
 }
 
-// ---------- SW ----------
-async function registerSW() {
+function drawContain(ctx, img, x, y, w, h) {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  const s = Math.min(w/iw, h/ih);
+  const nw = iw*s, nh = ih*s;
+  const nx = x + (w - nw)/2;
+  const ny = y + (h - nh)/2;
+  ctx.drawImage(img, nx, ny, nw, nh);
+}
+
+function exportPNG() {
+  const canvas = $("#composeCanvas");
+  const a = document.createElement("a");
+  a.download = `wardrobe-outfit-${Date.now()}.png`;
+  a.href = canvas.toDataURL("image/png");
+  a.click();
+}
+
+/* ---------- Settings + SW ---------- */
+async function checkSWUpdate(force = false) {
   if (!("serviceWorker" in navigator)) return;
   try {
-    await navigator.serviceWorker.register("./sw.js", { scope: "./" });
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) return;
+    await reg.update();
+    if (force) {
+      // best effort: ask SW to skipWaiting by reloading
+      location.reload();
+    }
   } catch {}
 }
 
-// ---------- Install prompt ----------
-let deferredPrompt = null;
-window.addEventListener("beforeinstallprompt", (e) => {
-  e.preventDefault();
-  deferredPrompt = e;
-  const btn = $("#btnInstall");
-  if (btn) btn.style.display = "inline-flex";
-});
-
-async function promptInstall() {
-  if (!deferredPrompt) return;
-  deferredPrompt.prompt();
-  await deferredPrompt.userChoice;
-  deferredPrompt = null;
-  $("#btnInstall").style.display = "none";
+async function clearSiteCachesAndReload() {
+  try {
+    // unregister SW
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    // clear CacheStorage
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch {}
+  location.href = "./?update=1&t=" + Date.now();
 }
 
-// ---------- Settings status ----------
-async function refreshStatus() {
-  const base = getWorkerBase();
-  $("#inpWorkerBase").value = base;
-
+async function testHealthz() {
   try {
-    const res = await fetch(`${base}/healthz`, { cache: "no-store" });
-    const json = await res.json().catch(() => null);
-    $("#preStatus").textContent = JSON.stringify(json || { ok: false }, null, 2);
+    const out = $("#healthOut");
+    out.textContent = "連線中…";
+    const res = await fetch(`${WORKER_BASE}/healthz`, { cache: "no-store" });
+    const j = await res.json().catch(() => null);
+    out.textContent = JSON.stringify(j, null, 2);
+    toast("已測試");
   } catch (e) {
-    $("#preStatus").textContent = `healthz 失敗：${String(e?.message || e)}`;
+    $("#healthOut").textContent = String(e?.message || e);
+    toast("測試失敗");
   }
 }
 
-// ---------- events ----------
-function bindUI() {
-  // bottom nav
-  $$(".navBtn").forEach((b) => {
-    b.addEventListener("click", () => showView(b.dataset.nav));
-  });
+/* ---------- Seed demo ---------- */
+async function seedDemo() {
+  if (!confirm("要建立示範資料嗎？（不會覆蓋你現有資料）")) return;
+  const now = Date.now();
+  const demo = [
+    { name: "示範：黑色外套", category: "outer", note: "示範資料（可刪）" },
+    { name: "示範：白色上衣", category: "top", note: "示範資料（可刪）" },
+    { name: "示範：深色長褲", category: "bottom", note: "示範資料（可刪）" },
+  ];
+  for (let i=0;i<demo.length;i++){
+    await window.WardrobeDB.putItem({
+      id: `demo_${now}_${i}`,
+      ...demo[i],
+      imageBlob: null,
+      createdAt: now+i,
+      updatedAt: now+i,
+    });
+  }
+  toast("示範資料已建立");
+  await loadAndRender();
+}
 
-  // segments filter
-  $$(".segBtn").forEach((b) => {
+/* ---------- Tabs ---------- */
+function setTab(tab) {
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  $("#page-closet").classList.toggle("active", tab === "closet");
+  $("#page-mix").classList.toggle("active", tab === "mix");
+  $("#page-settings").classList.toggle("active", tab === "settings");
+}
+
+/* ---------- Boot ---------- */
+async function boot() {
+  // worker base from storage
+  const saved = localStorage.getItem(LS_WORKER_BASE);
+  WORKER_BASE = saved || DEFAULT_WORKER_BASE;
+  $("#workerBase").value = WORKER_BASE;
+
+  // bind tabs
+  document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+  // bind chips
+  document.querySelectorAll("#filterChips .chip").forEach((b) => {
     b.addEventListener("click", () => {
-      $$(".segBtn").forEach((x) => x.classList.remove("active"));
+      document.querySelectorAll("#filterChips .chip").forEach((x) => x.classList.remove("active"));
       b.classList.add("active");
-      state.filter = b.dataset.filter;
-      renderWardrobe();
+      currentFilter = b.dataset.filter;
+      renderCloset();
     });
   });
 
-  // FAB
-  $("#fabAdd").addEventListener("click", () => {
-    clearEditForm();
-    openModal();
-  });
-
-  // modal close
+  // buttons
+  $("#btnAddItem").addEventListener("click", () => openModal());
   $("#btnCloseModal").addEventListener("click", closeModal);
-  $("#modalItem").addEventListener("click", (e) => {
-    if (e.target.id === "modalItem") closeModal();
+  $("#btnSaveItem").addEventListener("click", saveItem);
+  $("#btnDeleteItem").addEventListener("click", removeItem);
+
+  $("#btnClosePick").addEventListener("click", closePickModal);
+
+  document.querySelectorAll(".modalMask").forEach((m) =>
+    m.addEventListener("click", (e) => {
+      if (e.target?.dataset?.close) {
+        closeModal();
+        closePickModal();
+      }
+    })
+  );
+
+  // category seg
+  document.querySelectorAll("#catSeg .segBtn").forEach((b) => {
+    b.addEventListener("click", () => setCategorySeg(b.dataset.cat));
   });
 
-  // picker close
-  $("#btnClosePicker").addEventListener("click", closePicker);
-  $("#modalPicker").addEventListener("click", (e) => {
-    if (e.target.id === "modalPicker") closePicker();
+  // file input
+  $("#fileInput").addEventListener("change", async (e) => {
+    try {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      const blob = await window.WardrobeDB.fileToJpegBlob(f);
+      editImageBlob = blob;
+      renderPreviewFromBlob(editImageBlob);
+
+      // name default
+      if (!$("#itemName").value.trim()) $("#itemName").value = f.name.replace(/\.[^.]+$/, "");
+      toast("圖片已載入", 1200);
+    } catch (err) {
+      toast("圖片載入失敗");
+    }
   });
 
-  // category chips
-  $$(".chip").forEach((b) => {
-    b.addEventListener("click", () => setActiveCategory(b.dataset.cat));
-  });
-
-  // image input
-  $("#inpImage").addEventListener("change", async (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const blob = await compressImageToBlob(f);
-    state.editingImageBlob = blob;
-    showImagePreviewFromBlob(blob);
-  });
-
-  // save/delete
-  $("#btnSave").addEventListener("click", saveItem);
-  $("#btnDelete").addEventListener("click", deleteItem);
+  // AI analyze
+  $("#btnAIAnalyze").addEventListener("click", aiAnalyzeImage);
 
   // weather
   $("#btnLocate").addEventListener("click", refreshByGPS);
-
-  // mix slots
-  $$(".slot").forEach((b) => {
-    b.addEventListener("click", () => openPickerForSlot(b.dataset.slot));
+  $("#btnRefreshRules").addEventListener("click", () => {
+    const cached = readWeatherCache();
+    if (cached) renderWeather(cached);
+    else toast("尚無天氣資料，請先定位");
   });
+
+  // mix slot click
+  document.querySelectorAll(".slot").forEach((b) => {
+    b.addEventListener("click", () => openPickModal(b.dataset.slot));
+  });
+  $("#btnCompose").addEventListener("click", drawCompose);
+  $("#btnExport").addEventListener("click", exportPNG);
   $("#btnClearMix").addEventListener("click", () => {
-    state.mix = { inner:null, top:null, bottom:null, outer:null, shoes:null, accessory:null };
-    renderMixSlotTexts();
-    toast("已清空選擇");
-  });
-  $("#btnCompose").addEventListener("click", composeMixCanvas);
-
-  // AI
-  $("#btnAIAnalyze").addEventListener("click", aiAnalyzeImage);
-  $("#btnAIText").addEventListener("click", aiAutofillByText);
-
-  // install
-  $("#btnInstall").addEventListener("click", promptInstall);
-
-  // settings controls
-  $("#inpWorkerBase").addEventListener("change", async (e) => {
-    const v = String(e.target.value || "").trim().replace(/\/+$/, "");
-    if (!v.startsWith("http")) {
-      toast("Worker Base 格式不正確");
-      e.target.value = getWorkerBase();
-      return;
-    }
-    localStorage.setItem(LS_WORKER_BASE, v);
-    toast("已更新 Worker Base");
-    await refreshStatus();
-  });
-
-  $("#btnClearCache").addEventListener("click", () => {
-    localStorage.removeItem(LS_WEATHER_KEY);
-    toast("已清除天氣快取");
-  });
-
-  $("#btnClearDB").addEventListener("click", async () => {
-    if (!confirm("確定要清空衣櫃資料？（不可復原）")) return;
-    await dbClearItems();
+    for (const k of Object.keys(mixState)) mixState[k] = null;
+    syncMixSlotLabels();
     toast("已清空");
-    await loadItems();
   });
-}
 
-// ---------- boot ----------
-async function boot() {
-  await registerSW();
-  bindUI();
+  // settings
+  $("#workerBase").addEventListener("change", () => {
+    const v = $("#workerBase").value.trim();
+    if (!v) return;
+    WORKER_BASE = v.replace(/\/+$/,"");
+    localStorage.setItem(LS_WORKER_BASE, WORKER_BASE);
+    toast("已更新 Worker Base");
+  });
 
-  await loadItems();
+  $("#btnHealth").addEventListener("click", testHealthz);
+  $("#btnClearCache").addEventListener("click", clearSiteCachesAndReload);
+  $("#btnSeed").addEventListener("click", seedDemo);
 
-  // initial weather
+  // register SW
+  if ("serviceWorker" in navigator) {
+    try {
+      await navigator.serviceWorker.register("./sw.js?v=5", { scope: "./" });
+    } catch {}
+  }
+
+  // if update=1 => hard refresh caches
+  if (qs("update") === "1") {
+    // 主動更新 SW，並在下一次重新載入後穩定
+    try { await checkSWUpdate(false); } catch {}
+  }
+
+  // initial render
+  await loadAndRender();
+
+  // weather cache fast
   const cached = readWeatherCache();
   if (cached) renderWeather(cached);
-  refreshByGPS();
 
-  // settings status
-  await refreshStatus();
-
-  // initial canvas hint
-  const c = $("#mixCanvas");
-  const ctx = c.getContext("2d");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, c.width, c.height);
-  ctx.fillStyle = "#111";
-  ctx.font = "bold 40px system-ui, -apple-system";
-  ctx.fillText("合成示意圖會出現在這裡", 60, 140);
-  ctx.fillStyle = "#666";
-  ctx.font = "bold 22px system-ui, -apple-system";
-  ctx.fillText("先選內搭/上衣/下身/外套/鞋子/配件", 60, 190);
+  // auto refresh once
+  refreshByGPS().catch(()=>{});
 }
 
 document.addEventListener("DOMContentLoaded", boot);
