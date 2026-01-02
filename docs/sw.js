@@ -1,14 +1,15 @@
-"use strict";
+/* docs/sw.js
+   - 避免更新後變成純文字：HTML network-first；CSS/JS cache-first + 背景更新
+   - cache version 變更即可強制換新
+*/
 
-/* v7.3：換 cache name + 改 asset 清單（使用 style.v73.css） */
-const VERSION = "v7.3";
-const CACHE_NAME = `wardrobe-ai-${VERSION}`;
+const CACHE_NAME = "wardrobe-ai-cache-v20260102_1";
 const ASSETS = [
   "./",
   "./index.html",
-  "./style.v73.css",
-  "./app.js",
-  "./db.js",
+  "./style.css?v=20260102_1",
+  "./app.js?v=20260102_1",
+  "./db.js?v=20260102_1",
   "./manifest.webmanifest",
   "./icon-192.png",
   "./icon-512.png",
@@ -17,13 +18,7 @@ const ASSETS = [
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    await Promise.all(ASSETS.map(async (u) => {
-      try {
-        const req = new Request(u, { cache: "reload" });
-        const res = await fetch(req);
-        if (res.ok) await cache.put(u, res.clone());
-      } catch (_) {}
-    }));
+    await cache.addAll(ASSETS.map(x => new Request(x, { cache: "reload" })));
     self.skipWaiting();
   })());
 });
@@ -31,62 +26,60 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.map((k) => {
-      if (k.startsWith("wardrobe-ai-") && k !== CACHE_NAME) return caches.delete(k);
-    }));
-    await self.clients.claim();
+    await Promise.all(keys.map(k => (k === CACHE_NAME ? null : caches.delete(k))));
+    self.clients.claim();
   })());
 });
 
+function isHTML(req) {
+  return req.mode === "navigate" || (req.headers.get("accept") || "").includes("text/html");
+}
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
-  if (req.method !== "GET") return;
-
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;
 
-  // navigation：network-first，失敗回 cache
-  if (req.mode === "navigate") {
+  // only same-origin
+  if (url.origin !== location.origin) return;
+
+  if (isHTML(req)) {
+    // network-first for HTML
     event.respondWith((async () => {
       try {
         const fresh = await fetch(req);
         const cache = await caches.open(CACHE_NAME);
-        await cache.put("./index.html", fresh.clone());
+        cache.put(req, fresh.clone());
         return fresh;
       } catch {
-        const cached = await caches.match("./index.html", { ignoreSearch: true });
-        return cached || new Response("Offline", { status: 503, headers: { "Content-Type": "text/plain" } });
+        const cache = await caches.open(CACHE_NAME);
+        const cached = await cache.match(req) || await cache.match("./");
+        return cached || new Response("Offline", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
       }
     })());
     return;
   }
 
-  // assets：stale-while-revalidate + ignoreSearch
+  // cache-first for assets
   event.respondWith((async () => {
     const cache = await caches.open(CACHE_NAME);
-    const cached = await caches.match(req, { ignoreSearch: true });
-
-    const fetchPromise = (async () => {
-      try {
-        const fresh = await fetch(req);
-        if (fresh && fresh.ok) {
-          const key = url.pathname === "/" ? "./index.html" : url.pathname;
-          await cache.put(key, fresh.clone());
-        }
-        return fresh;
-      } catch {
-        return null;
-      }
-    })();
-
+    const cached = await cache.match(req);
     if (cached) {
-      event.waitUntil(fetchPromise);
+      // background update
+      event.waitUntil((async () => {
+        try {
+          const fresh = await fetch(req);
+          if (fresh && fresh.ok) cache.put(req, fresh.clone());
+        } catch {}
+      })());
       return cached;
     }
 
-    const fresh = await fetchPromise;
-    if (fresh) return fresh;
-
-    return new Response("Offline", { status: 503, headers: { "Content-Type": "text/plain" } });
+    try {
+      const fresh = await fetch(req);
+      if (fresh && fresh.ok) cache.put(req, fresh.clone());
+      return fresh;
+    } catch {
+      return new Response("", { status: 504 });
+    }
   })());
 });
